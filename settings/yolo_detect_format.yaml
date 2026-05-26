@@ -1,0 +1,23 @@
+# YOLOv11 Detection Settings
+YOLO:
+  model_path: "../model/runs/detect/thr17_20250616-19_480p_2/weights/best.pt"
+  detect_config:
+    conf: 0.45  # confidence threshold
+    # iou: 0.45  # IoU threshold for NMS
+    save: False  # save the image
+    save_txt: True  # save results to a text file
+    save_conf: True  # save confidence scores in the text file
+    line_width: 2  # line width for bounding boxes
+    # project: '../detect/'  # directory to save results
+    exist_ok: True  # overwrite existing results directory
+    verbose: False  # suppress verbose output
+
+# image size
+# image size for detection choice form below
+# HD1080p: 1920x1080
+# HD720p: 1280x720
+# SD480p: 640x480
+# SD360p: 480x360
+image_size:
+  type: HD1080p  
+

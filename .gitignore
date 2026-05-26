@@ -1,0 +1,31 @@
+# Ignore folders
+.venv/
+detect/*/
+__pycache__/
+base_images/
+detect/
+model/*/
+projects/*/
+projects/*/*/
+projects/*/models/
+!projects/project_dummy/
+!projects/project_dummy/data_collection/
+!projects/project_dummy/data_collection/*.png
+
+
+# Ignore Python bytecode files
+*/*.pyc
+*.pyc
+.DS_Store
+*/.DS_Store
+model/*.ipynb
+projects/*/*.jpg
+projects/*/*/*
+yolo11n.pt
+uv.lock
+yolo_system/db.sqlite3
+yolo_system/*/migrations/*_initial.py
+yolo_system/*/migrations/__pycache__/
+
+yolo_system/*/migrations/*.py
+!yolo_system/*/migrations/__init__.py
