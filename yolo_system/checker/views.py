@@ -370,3 +370,21 @@ def check_model_status(request):
         'model_loaded_training_id': model_loaded_training_id
     })
 
+
+@csrf_exempt
+def reset_plc_result_signals(request):
+    if request.method != 'POST':
+        return JsonResponse({'success': False, 'error': 'POSTリクエストが必要です'})
+
+    try:
+        from checker.applications.plc_monitor import reset_result_signals
+
+        reset_targets = reset_result_signals()
+        return JsonResponse({
+            'success': True,
+            'message': 'PLC結果ビットをリセットしました',
+            'reset_targets': reset_targets,
+        })
+    except Exception as e:
+        return JsonResponse({'success': False, 'error': str(e)})
+

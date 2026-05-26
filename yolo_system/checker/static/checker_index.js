@@ -102,11 +102,97 @@ function drawImageWithAspectRatio(canvas, ctx, img) {
 // click on 確認 button
 //////////////////////////////////////////////
 const snapButton = document.getElementById("snapButton");
+const resetPlcResultButton = document.getElementById("resetPlcResultButton");
 const detectedImage = document.getElementById("detectedImage");
 const detectedResult = document.getElementById("detectedResult");
 const ctx_detected = detectedImage.getContext("2d");
+let detectionInProgress = false;
+
+function setDetectionInProgress(inProgress) {
+  detectionInProgress = inProgress;
+  if (snapButton) {
+    snapButton.disabled = inProgress;
+  }
+}
+
+function resetCheckerDisplay() {
+  const mainBg = document.getElementById("mainBg");
+  const resultCard = document.getElementById("resultCard");
+  const imageCard = document.getElementById("imageCard");
+
+  ctx_detected.clearRect(0, 0, detectedImage.width, detectedImage.height);
+  detectedImage.removeAttribute("width");
+  detectedImage.removeAttribute("height");
+  detectedImage.style.width = "100%";
+  detectedImage.style.height = "auto";
+
+  mainBg.style.background = "transparent";
+  resultCard.style.background = "#fff";
+  resultCard.style.color = "#23272b";
+  resultCard.style.height = "";
+  resultCard.classList.remove('detected');
+  imageCard.style.background = "#e3f2fd";
+  imageCard.style.color = "#23272b";
+  detectedResult.innerHTML = "";
+  showWaiting();
+}
+
+function getCookie(name) {
+  let cookieValue = null;
+  if (document.cookie && document.cookie !== '') {
+    const cookies = document.cookie.split(';');
+    for (let i = 0; i < cookies.length; i++) {
+      const cookie = cookies[i].trim();
+      if (cookie.substring(0, name.length + 1) === (name + '=')) {
+        cookieValue = decodeURIComponent(cookie.substring(name.length + 1));
+        break;
+      }
+    }
+  }
+  return cookieValue;
+}
+
+function resetPlcResultSignals() {
+  if (!confirm("PLC結果ビットをリセットします。設備側が結果を読み取り済みであることを確認してください。")) {
+    return;
+  }
+
+  resetPlcResultButton.disabled = true;
+  fetch('/checker/api/reset_plc_result/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRFToken': getCookie('csrftoken'),
+    },
+    body: JSON.stringify({ reset: true }),
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (!data.success) {
+      throw new Error(data.error || 'PLC結果ビットのリセットに失敗しました');
+    }
+    console.log("PLC result reset:", data.reset_targets);
+    resetCheckerDisplay();
+    alert(data.message);
+  })
+  .catch(error => {
+    console.error("PLC result reset error:", error);
+    alert("PLC結果ビットのリセットに失敗しました: " + error.message);
+  })
+  .finally(() => {
+    resetPlcResultButton.disabled = false;
+  });
+}
+
+if (resetPlcResultButton) {
+  resetPlcResultButton.addEventListener("click", resetPlcResultSignals);
+}
 
 snapButton.addEventListener("click", () => {
+  if (detectionInProgress) {
+    console.log("Detection is already in progress.");
+    return;
+  }
   console.log("=== CONFIRM BUTTON CLICKED ===");
   console.log("Button element:", snapButton);
   console.log("Timestamp:", new Date().toISOString());
@@ -157,14 +243,14 @@ window.addEventListener('keydown', function(event) {
   // エンターキーが押されたかどうかを確認します
   const currentTime = new Date().getTime();
   if (event.code === "Enter") {
-      if (currentTime - lastKeyDownTime > 500) {
+      if (!detectionInProgress && currentTime - lastKeyDownTime > 500) {
           console.log(event.code);
           detect();
       } else {
           console.log('key was pressed multiple times in a short period of time');
       }
   } else if (event.code === "Numpad0") {
-      if (currentTime - lastKeyDownTime > 500){
+      if (!detectionInProgress && currentTime - lastKeyDownTime > 500){
           console.log(event.code);
           detect();
       } else {
@@ -176,8 +262,13 @@ window.addEventListener('keydown', function(event) {
 
 //////////////////////////////////////////////
 function detect() {
+  if (detectionInProgress) {
+    console.log("Detection is already in progress.");
+    return;
+  }
   console.log("=== DETECT FUNCTION CALLED ===");
   console.log("Timestamp:", new Date().toISOString());
+  setDetectionInProgress(true);
   
   // 判定待ち状態に設定
   showWaiting();
@@ -208,6 +299,7 @@ function detect() {
     console.error("=== WebSocket connection timeout ===");
     ws_snap.close();
     alert("接続がタイムアウトしました。再度お試しください。");
+    setDetectionInProgress(false);
     showWaiting();
   }, 10000); // 10秒でタイムアウト
 
@@ -236,6 +328,7 @@ function detect() {
     console.error("WebSocket URL:", ws_snap.url);
     clearTimeout(connectionTimeout);
     alert("WebSocket接続エラーが発生しました。モデルがロードされているか確認してください。");
+    setDetectionInProgress(false);
     showWaiting();
   };
 
@@ -247,6 +340,7 @@ function detect() {
     console.log("Close reason:", event.reason);
     console.log("Was clean:", event.wasClean);
     clearTimeout(connectionTimeout);
+    setDetectionInProgress(false);
     
     if (event.code !== 1000 && event.code !== 1001) {
       console.error("=== WebSocket closed unexpectedly ===");
@@ -287,6 +381,7 @@ function detect() {
         if (message.error) {
           console.error("=== Server error ===", message.error);
           alert("エラー: " + message.error);
+          setDetectionInProgress(false);
           showWaiting();
           return;
         }
@@ -349,6 +444,7 @@ function detect() {
         console.error("Error parsing JSON message:", parseError);
         console.error("Raw message data:", evt.data);
         alert("サーバーからの応答の解析に失敗しました");
+        setDetectionInProgress(false);
         showWaiting();
       }
     }

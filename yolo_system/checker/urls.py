@@ -12,4 +12,5 @@ urlpatterns = [
     path('api/set_active_training/', views.set_active_training, name='set_active_training'),
     path('api/load_model/', views.load_model_for_training, name='load_model_for_training'),
     path('api/check_model_status/', views.check_model_status, name='check_model_status'),
+    path('api/reset_plc_result/', views.reset_plc_result_signals, name='reset_plc_result_signals'),
 ]

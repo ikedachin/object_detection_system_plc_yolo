@@ -120,6 +120,9 @@
           <button type="button" class="btn btn-success ms-3 fw-bold" id="projectSelectBtn" data-bs-toggle="modal" data-bs-target="#projectModal">
             {{ selected_project|default:"プロジェクト選択" }}
           </button>
+          <button type="button" class="btn btn-outline-warning btn-sm ms-3" id="resetPlcResultButton" title="PLC結果ビットを初期状態に戻します">
+            <i class="bi bi-arrow-counterclockwise me-1"></i>PLC結果リセット
+          </button>
           <span class="navbar-text mini-clock ms-3" id="miniClock">--:--:--</span>
         </div>
       </div>

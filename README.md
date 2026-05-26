@@ -16,6 +16,7 @@ YOLOに関してはultralytics社のライセンスに準じます。
 - **画像の切り取り**：学習データの写真を大きめの画像サイズで撮影し、切り取る位置を決めて全データに適用することができます。
 - **学習**：学習時のパラメータを簡単にセットすることができます。詳しくはultralytics社のHPを見てください。
 - **アイテム推論（検出）**: YOLOモデルを使用した箱内のアイテム推論（検出）
+- **PLC連携トリガー**: オムロンPLC（CJ2H）のメモリビットを監視し、ON検知時にチェッカーアプリのスナップショット処理を実行
 
 
 ## システム構成
@@ -26,6 +27,7 @@ YOLOに関してはultralytics社のライセンスに準じます。
 - **Channels/Daphne**: WebSocketサポート用
 - **OpenCV**: カメラ制御と画像処理
 - **Ultralytics YOLO**: 物体検出と分類
+- **pyfins**: オムロンPLCとのFINS/UDP通信
 
 ### フロントエンド
 
@@ -56,7 +58,8 @@ yolo_system/
 │   │   └── thumbnail/ webアプリ表示用サムネイル
 │   │       └── ...
 ├── settings/ # 残骸かも・・・
-│   └── yolo_detect.yaml
+│   ├── yolo_detect.yaml
+│   └── plc_settings.yaml # PLC接続・監視ビット設定
 ├── yolo_system/ # Djangoのファイル
 │   ├── annotator/ # アノテーションを行うアプリ
 │   │   └── ...
@@ -104,6 +107,7 @@ yolo_system/
 - 推論インターフェース（Web UI）
 - 共有カメラリソースによる効率的な画像処理
 - 結果の保存・履歴管理
+- PLC監視スクリプトによる外部設備スイッチからの検査トリガー
 
 ### 2. 画像取得アプリ (`get_imgs`)
 カメラからの画像取得・保存・配信を担当するアプリです。
@@ -158,11 +162,13 @@ Djangoプロジェクト本体の設定・ルーティング・ASGI/WGIエント
   - channels >= 4.2.2
   - daphne >= 4.2.0
   - django >= 5.2.2
+  - fastapi >= 0.115.0 (ダミーPLCサーバー用)
   - ipykernel >= 6.29.5 (Jupyter Notebook用)
   - opencv-python >= 4.11.0.86
   - pip >= 25.1.1
   - pyyaml >= 6.0.2
   - ultralytics >= 8.3.158
+  - uvicorn >= 0.30.0 (ダミーPLCサーバー用)
   あまりバージョンを気にしなくていいかもしれない
 
 ### インストール
@@ -217,6 +223,140 @@ Djangoサーバーを起動:
       ./start.sh
       ```
 
+### PLC監視スクリプト
+
+チェッカーアプリでは、Web画面の `snapButton` と同じバックエンド処理をPLCのメモリビットから起動できます。
+
+PLC接続情報と監視ビットは `settings/plc_settings.yaml` で設定します。
+
+```yaml
+plc:
+  enabled: false
+
+test_server:
+  enabled: false
+  host: "127.0.0.1"
+  port: 8010
+  base_url: "http://127.0.0.1:8010"
+
+connection:
+  host: "192.168.250.1"
+  port: 9600
+  plc_node: 1
+  pc_node: 25
+  timeout: 3.0
+
+monitor:
+  area: "D"
+  word_address: 100
+  bit: 0
+  poll_interval_seconds: 1.0
+
+result_signal:
+  complete:
+    area: "D"
+    word_address: 200
+    bit: 0
+    on_value: 1
+    reset_value: 0
+  ok:
+    area: "D"
+    word_address: 200
+    bit: 1
+    ok_value: 1
+    ng_value: 0
+    reset_value: 0
+  error:
+    area: "D"
+    word_address: 200
+    bit: 2
+    on_value: 1
+    reset_value: 0
+  reset_by_equipment: true
+
+behavior:
+  reset_on_success: true
+  reset_value: 0
+```
+
+- `plc.enabled` はPLC通信のON/OFFです。PLCなしで画面やDjango側をテストする場合は `false`、実機PLCへ接続する場合は `true` にします。
+- `test_server.enabled` はFastAPI製のダミーPLCサーバーを使うかどうかの設定です。`plc.enabled: false` かつ `test_server.enabled: true` の場合、PLC監視スクリプトと `PLC結果リセット` は実PLCではなく `test_server.base_url` へHTTPでアクセスします。
+- `plc.enabled: false` かつ `test_server.enabled: false` の場合、PLC監視スクリプトはPLCへ接続せず終了します。画面右上の `PLC結果リセット` もPLC書き込みをスキップして成功扱いにします。
+- 実PLCへ接続する場合は、使用するFINSライブラリを別途導入してください。`pyfins` はPyPIに通常パッケージとして公開されていないため、GitHub配布版など実環境で使う実装に合わせて導入し、`checker/applications/plc_monitor.py` の `PlcClient` adapterを最終確認してください。
+- GitHub版 `pyfins` を導入する補助スクリプトとして、macOS/Linux用の `install_pyfins.sh` とWindows用の `install_pyfins.bat` を用意しています。
+- `monitor` は現場スイッチONで立つ監視対象ビットです。上記例では `D100.00` を監視します。
+- `result_signal.complete` は判定完了通知ビットです。上記例では判定完了時に `D200.00` をONにします。
+- `result_signal.ok` はOK/NG値ビットです。上記例では `D200.01=1` がOK、`D200.01=0` がNGです。設備側は `D200.00` のONを見てから `D200.01` を読み取ります。
+- `result_signal.error` は処理エラー通知ビットです。カメラ取得、モデル、推論などで判定処理自体が失敗した場合に `D200.02` をONにします。
+- 結果通知ビットは設備側で読み取った後にリセットする前提です。監視スクリプトは `D200.00` がONの間、新しいPLCトリガーを処理せず待機します。
+- snap処理が完了した場合は、判定OK/NGに関係なく監視対象ビットを `reset_value` に戻します。判定NGでも次回の現場スイッチONでリトライできます。
+- カメラ取得、推論、設定エラーなどでsnap処理自体が失敗した場合はエラー通知ビットをONにし、監視対象ビットは戻しません。
+- 判定処理中はPLCポーリングを停止します。Web画面の `snapButton` とPLC監視が同時に判定処理を走らせないよう、共通ロックで排他制御しています。
+- PLC監視スクリプトは `/tmp/yolo_system_plc_monitor.lock` で二重起動を防止します。2つ目のプロセスは起動時に終了します。
+- 画面右上の `PLC結果リセット` ボタンで、`complete`、`ok`、`error` の各結果ビットを `reset_value` に戻し、画面表示も初期状態へ戻します。このボタンは検査開始ボタンから離した場所に配置しています。
+
+PLC監視スクリプトを起動:
+
+```bash
+source .venv/bin/activate
+python yolo_system/checker/applications/plc_monitor.py
+```
+
+uvを使う場合:
+
+```bash
+uv run python yolo_system/checker/applications/plc_monitor.py
+```
+
+実PLC用のGitHub版 `pyfins` をインストール:
+
+```bash
+chmod +x install_pyfins.sh
+./install_pyfins.sh
+```
+
+Windowsの場合:
+
+```bat
+install_pyfins.bat
+```
+
+#### ダミーPLCサーバー
+
+PLCなしで通信関係を確認する場合は、`settings/plc_settings.yaml` を以下のようにします。
+
+```yaml
+plc:
+  enabled: false
+
+test_server:
+  enabled: true
+  host: "127.0.0.1"
+  port: 8010
+  base_url: "http://127.0.0.1:8010"
+```
+
+FastAPIのダミーPLCサーバーを起動:
+
+```bash
+source .venv/bin/activate
+python plc_test_server.py
+```
+
+uvを使う場合:
+
+```bash
+uv run python plc_test_server.py
+```
+
+ブラウザで以下にアクセスすると、簡易画面から `D100.00` のトリガーON、結果ビットの確認、結果リセット、全ビットOFFができます。
+
+```text
+http://127.0.0.1:8010/
+```
+
+この状態で別ターミナルからPLC監視スクリプトを起動すると、監視スクリプトはFastAPIサーバーのビット状態をPLCメモリとして扱います。
+
 ### Webアプリへのアクセス
    - サーバー起動後、ブラウザで次のURLにアクセスしてください：
       ```
@@ -225,4 +365,3 @@ Djangoサーバーを起動:
 ### License
 MITライセンスとして公開します。
 ただし、本プログラム内で利用しているUltralytics YOLOはAGPLv3ライセンスです。YOLOの使用に関しては、Ultralytics社のライセンス条件に従ってください。
-
