@@ -218,10 +218,11 @@ Djangoサーバーを起動:
       python manage.py runserver
       ```
 
-   - または、提供されているスクリプトを使用:(作成中)
+   - または、提供されているスクリプトを使用
       ```bash
       ./start.sh
       ```
+      このスクリプトは Django サーバーと PLC監視コマンドを同時に起動します。
 
 ### PLC監視スクリプト
 
@@ -295,17 +296,19 @@ behavior:
 - PLC監視スクリプトは `/tmp/yolo_system_plc_monitor.lock` で二重起動を防止します。2つ目のプロセスは起動時に終了します。
 - 画面右上の `PLC結果リセット` ボタンで、`complete`、`ok`、`error` の各結果ビットを `reset_value` に戻し、画面表示も初期状態へ戻します。このボタンは検査開始ボタンから離した場所に配置しています。
 
-PLC監視スクリプトを起動:
+PLC監視コマンドを起動:
 
 ```bash
 source .venv/bin/activate
-python yolo_system/checker/applications/plc_monitor.py
+cd yolo_system
+python manage.py run_plc_monitor
 ```
 
 uvを使う場合:
 
 ```bash
-uv run python yolo_system/checker/applications/plc_monitor.py
+cd yolo_system
+uv run python manage.py run_plc_monitor
 ```
 
 実PLC用のGitHub版 `pyfins` をインストール:
@@ -355,7 +358,7 @@ uv run python plc_test_server.py
 http://127.0.0.1:8010/
 ```
 
-この状態で別ターミナルからPLC監視スクリプトを起動すると、監視スクリプトはFastAPIサーバーのビット状態をPLCメモリとして扱います。
+この状態で別ターミナルからPLC監視コマンドを起動すると、監視コマンドはFastAPIサーバーのビット状態をPLCメモリとして扱います。
 
 ### Webアプリへのアクセス
    - サーバー起動後、ブラウザで次のURLにアクセスしてください：
