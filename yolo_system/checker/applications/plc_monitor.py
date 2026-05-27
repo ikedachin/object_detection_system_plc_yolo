@@ -1,19 +1,24 @@
 import logging
+import base64
 import os
+import tempfile
 import sys
+import threading
 import time
 import json
 from pathlib import Path
-from urllib import request
+from urllib import error as urlerror, request
 
 import yaml
+from asgiref.sync import async_to_sync
+from channels.layers import get_channel_layer
 
 
 THIS_FILE = Path(__file__).resolve()
 PROJECT_ROOT = THIS_FILE.parents[3]
 DJANGO_ROOT = THIS_FILE.parents[2]
 SETTINGS_PATH = PROJECT_ROOT / "settings" / "plc_settings.yaml"
-LOCK_PATH = Path("/tmp/yolo_system_plc_monitor.lock")
+LOCK_PATH = Path(tempfile.gettempdir()) / "yolo_system_plc_monitor.lock"
 
 if str(DJANGO_ROOT) not in sys.path:
     sys.path.insert(0, str(DJANGO_ROOT))
@@ -21,13 +26,16 @@ if str(DJANGO_ROOT) not in sys.path:
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "yolo_system.settings")
 
 import django  # noqa: E402
+from django.apps import apps  # noqa: E402
 
-django.setup()
+if not apps.ready and not getattr(apps, "loading", False):
+    django.setup()
 
 from checker.applications.snap_service import is_snap_running, run_snap_backend_sync  # noqa: E402
 
 
 logger = logging.getLogger(__name__)
+_background_thread = None
 
 
 class AlreadyRunningError(RuntimeError):
@@ -38,16 +46,33 @@ class SingleInstanceLock:
     def __init__(self, path=LOCK_PATH):
         self.path = Path(path)
         self.file = None
+        self._locked_by = None
 
     def acquire(self):
-        import fcntl
-
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = open(self.path, "w")
-        try:
-            fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise AlreadyRunningError(f"PLC monitor is already running. lock={self.path}") from exc
+        self.file = open(self.path, "a+")
+
+        if os.name == "nt":
+            try:
+                import msvcrt
+
+                self.file.seek(0)
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)
+                self._locked_by = "msvcrt"
+            except OSError as exc:
+                self.file.close()
+                self.file = None
+                raise AlreadyRunningError(f"PLC monitor is already running. lock={self.path}") from exc
+        else:
+            try:
+                import fcntl
+
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                self._locked_by = "fcntl"
+            except BlockingIOError as exc:
+                self.file.close()
+                self.file = None
+                raise AlreadyRunningError(f"PLC monitor is already running. lock={self.path}") from exc
 
         self.file.seek(0)
         self.file.truncate()
@@ -58,13 +83,20 @@ class SingleInstanceLock:
     def release(self):
         if self.file is None:
             return
-        import fcntl
-
         try:
-            fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
+            if self._locked_by == "msvcrt":
+                import msvcrt
+
+                self.file.seek(0)
+                msvcrt.locking(self.file.fileno(), msvcrt.LK_UNLCK, 1)
+            elif self._locked_by == "fcntl":
+                import fcntl
+
+                fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
         finally:
             self.file.close()
             self.file = None
+            self._locked_by = None
 
     def __enter__(self):
         return self.acquire()
@@ -238,11 +270,53 @@ def _write_signal(client, signal, value_key, default):
     return value
 
 
-def _result_signals_are_pending(client, result_signal):
-    complete_signal = result_signal.get("complete") if result_signal else None
-    if not complete_signal:
-        return False
-    return client.read_bit(*_signal_address(complete_signal))
+def notify_checker_status(payload):
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
+    async_to_sync(channel_layer.group_send)(
+        "checker_status",
+        {
+            "type": "send_checker_status",
+            "payload": payload,
+        },
+    )
+
+
+def _read_signal(client, signal, default=False):
+    if not signal:
+        return default
+    return client.read_bit(*_signal_address(signal))
+
+
+def _write_signal_value(client, signal, value):
+    if not signal:
+        return None
+    client.write_bit(*_signal_address(signal), int(value))
+    return int(value)
+
+
+def _ready_for_trigger(client, monitor, result_signal):
+    trigger_is_off = not client.read_bit(monitor["area"], monitor["word_address"], monitor["bit"])
+    complete_is_on = _read_signal(client, result_signal.get("complete") if result_signal else None, True)
+    return trigger_is_off and complete_is_on
+
+
+def clear_runtime_signals(client, monitor, result_signal):
+    client.write_bit(monitor["area"], monitor["word_address"], monitor["bit"], 0)
+    if not result_signal:
+        return
+    for name in ("complete", "ok", "error"):
+        _write_signal_value(client, result_signal.get(name), 0)
+
+
+def set_ready_state(client, monitor, result_signal):
+    client.write_bit(monitor["area"], monitor["word_address"], monitor["bit"], 0)
+    if not result_signal:
+        return
+    _write_signal_value(client, result_signal.get("complete"), 1)
+    _write_signal_value(client, result_signal.get("ok"), 0)
+    _write_signal_value(client, result_signal.get("error"), 0)
 
 
 def write_completed_result_signals(client, result_signal, is_ok):
@@ -253,15 +327,18 @@ def write_completed_result_signals(client, result_signal, is_ok):
     error_signal = result_signal.get("error")
     complete_signal = result_signal.get("complete")
 
+    ok_value = 1 if is_ok else 0
+    error_value = 0 if is_ok else 1
+    complete_value = 0 if is_ok else 1
+
     if ok_signal:
-        key = "ok_value" if is_ok else "ng_value"
-        value = _write_signal(client, ok_signal, key, 1 if is_ok else 0)
-        logger.info("PLC result OK/NG signal set: %s%s.%02d=%s", ok_signal["area"], int(ok_signal["word_address"]), int(ok_signal["bit"]), value)
+        value = _write_signal_value(client, ok_signal, ok_value)
+        logger.info("PLC result OK signal set: %s%s.%02d=%s", ok_signal["area"], int(ok_signal["word_address"]), int(ok_signal["bit"]), value)
     if error_signal:
-        value = _write_signal(client, error_signal, "reset_value", 0)
-        logger.info("PLC result error signal reset: %s%s.%02d=%s", error_signal["area"], int(error_signal["word_address"]), int(error_signal["bit"]), value)
+        value = _write_signal_value(client, error_signal, error_value)
+        logger.info("PLC result error signal set: %s%s.%02d=%s", error_signal["area"], int(error_signal["word_address"]), int(error_signal["bit"]), value)
     if complete_signal:
-        value = _write_signal(client, complete_signal, "on_value", 1)
+        value = _write_signal_value(client, complete_signal, complete_value)
         logger.info("PLC result complete signal set: %s%s.%02d=%s", complete_signal["area"], int(complete_signal["word_address"]), int(complete_signal["bit"]), value)
 
 
@@ -273,10 +350,10 @@ def write_error_result_signals(client, result_signal):
     complete_signal = result_signal.get("complete")
 
     if error_signal:
-        value = _write_signal(client, error_signal, "on_value", 1)
+        value = _write_signal_value(client, error_signal, 1)
         logger.info("PLC result error signal set: %s%s.%02d=%s", error_signal["area"], int(error_signal["word_address"]), int(error_signal["bit"]), value)
     if complete_signal:
-        value = _write_signal(client, complete_signal, "on_value", 1)
+        value = _write_signal_value(client, complete_signal, 1)
         logger.info("PLC result complete signal set after error: %s%s.%02d=%s", complete_signal["area"], int(complete_signal["word_address"]), int(complete_signal["bit"]), value)
 
 
@@ -297,11 +374,22 @@ def reset_result_signals(config=None):
 
     reset_targets = []
     try:
+        monitor = config.get("monitor")
+        if monitor:
+            client.write_bit(monitor["area"], monitor["word_address"], monitor["bit"], 0)
+            reset_targets.append({
+                "name": "trigger",
+                "area": monitor["area"],
+                "word_address": int(monitor["word_address"]),
+                "bit": int(monitor["bit"]),
+                "value": 0,
+            })
         for name in ("complete", "ok", "error"):
             signal = result_signal.get(name)
             if not signal:
                 continue
-            value = _write_signal(client, signal, "reset_value", 0)
+            value = 1 if name == "complete" else 0
+            _write_signal_value(client, signal, value)
             reset_targets.append({
                 "name": name,
                 "area": signal["area"],
@@ -325,8 +413,7 @@ def run_monitor():
     result_signal = config.get("result_signal")
     behavior = config.get("behavior", {})
     poll_interval = float(monitor.get("poll_interval_seconds", 1.0))
-    reset_on_success = bool(behavior.get("reset_on_success", True))
-    reset_value = int(behavior.get("reset_value", 0))
+    last_connection_error_log = 0.0
 
     logger.info(
         "PLC monitor started: %s%s.%02d",
@@ -343,25 +430,47 @@ def run_monitor():
                     time.sleep(poll_interval)
                     continue
 
-                if _result_signals_are_pending(client, result_signal):
-                    logger.warning("PLC result complete signal is still ON. Waiting for equipment or reset button to clear it.")
-                    time.sleep(poll_interval)
-                    continue
-
                 is_on = client.read_bit(monitor["area"], monitor["word_address"], monitor["bit"])
                 if is_on:
+                    complete_is_on = _read_signal(client, result_signal.get("complete") if result_signal else None, True)
+                    if not complete_is_on:
+                        logger.warning("PLC trigger ignored because complete is OFF. Resetting trigger bit.")
+                        client.write_bit(monitor["area"], monitor["word_address"], monitor["bit"], 0)
+                        time.sleep(poll_interval)
+                        continue
+
                     logger.info("PLC trigger detected. Monitoring is paused while judgment is running.")
+                    clear_runtime_signals(client, monitor, result_signal)
                     try:
                         snap_result = run_snap_backend_sync()
-                    except Exception:
+                    except Exception as exc:
+                        client.write_bit(monitor["area"], monitor["word_address"], monitor["bit"], 0)
                         write_error_result_signals(client, result_signal)
+                        notify_checker_status({
+                            "type": "plc_status",
+                            "status": "error",
+                            "error": "PLCトリガーによる判定に失敗しました: " + str(exc),
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        })
                         raise
 
                     logger.info("Snap backend completed: result=%s result_dict=%s", snap_result.result, snap_result.result_dict)
-                    if reset_on_success:
-                        client.write_bit(monitor["area"], monitor["word_address"], monitor["bit"], reset_value)
-                        logger.info("PLC trigger reset to %s after completed judgment. NG results are retryable.", reset_value)
+                    client.write_bit(monitor["area"], monitor["word_address"], monitor["bit"], 0)
                     write_completed_result_signals(client, result_signal, snap_result.result)
+                    notify_checker_status({
+                        "type": "plc_status",
+                        "status": "completed",
+                        "result": snap_result.result,
+                        "result_dict": snap_result.result_dict,
+                        "message": snap_result.message,
+                        "timestamp": snap_result.timestamp,
+                        "image_data_url": "data:image/png;base64," + base64.b64encode(snap_result.image_bytes).decode("ascii"),
+                    })
+            except urlerror.URLError as exc:
+                now = time.monotonic()
+                if now - last_connection_error_log >= 30.0:
+                    logger.warning("PLC/test server is not reachable yet: %s", exc)
+                    last_connection_error_log = now
             except Exception:
                 logger.exception("PLC monitor iteration failed. Trigger/result bits were not fully updated.")
 
@@ -381,6 +490,31 @@ def main():
     except AlreadyRunningError as exc:
         logger.error(str(exc))
         raise SystemExit(1) from exc
+
+
+def start_background_monitor():
+    global _background_thread
+    if _background_thread and _background_thread.is_alive():
+        return _background_thread
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+
+    def target():
+        try:
+            with SingleInstanceLock():
+                run_monitor()
+        except AlreadyRunningError as exc:
+            logger.info("PLC monitor background thread is not started: %s", exc)
+        except Exception:
+            logger.exception("PLC monitor background thread stopped unexpectedly.")
+
+    _background_thread = threading.Thread(target=target, name="plc-monitor", daemon=True)
+    _background_thread.start()
+    logger.info("PLC monitor background thread started.")
+    return _background_thread
 
 
 if __name__ == "__main__":

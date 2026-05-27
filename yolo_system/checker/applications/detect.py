@@ -35,16 +35,19 @@ detect_config = yolo_config['detect_config']
 async def detect_objects(img: str | np.ndarray, model, project=None, training_run=None, **kwargs) -> tuple[bool, str, int, str]:
     save_folder_time = datetime.datetime.now().strftime('%H_%M_%S')
     save_folder_date = datetime.datetime.now().strftime('%Y%m%d')
-    kwargs['project'] = f'../detect/{save_folder_date}/{save_folder_time}'
+    output_dir = BASE_DIR / "detect" / save_folder_date / save_folder_time
+    kwargs['project'] = str(output_dir)
     # print(f'[DEBUG {detect_objects.__name__}]parameters:', kwargs)
     # 推論
     result = model(img, **kwargs)
     # pngファイルで保存する
-    result[0].save(kwargs['project'] + '/predict/latest.png')  # save the results to the specified directory
+    result_image_path = output_dir / "predict" / "latest.png"
+    result_image_path.parent.mkdir(parents=True, exist_ok=True)
+    result[0].save(str(result_image_path))  # save the results to the specified directory
     
     # データベースに結果を保存（引数でprojectとtraining_runが渡された場合）
     if project and training_run:
-        await save_inference_result_to_db(result, kwargs['project'] + '/predict/latest.png', project, training_run, kwargs)
+        await save_inference_result_to_db(result, str(result_image_path), project, training_run, kwargs)
     
     return result_detector(result)
 

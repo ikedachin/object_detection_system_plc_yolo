@@ -22,6 +22,13 @@ model_loaded_training_id = None  # 現在ロードされているモデルの学
 
 # Create your views here.
 
+
+def resolve_project_root_path(path_value):
+    path = Path(str(path_value).replace('\\', '/'))
+    if path.is_absolute():
+        return path
+    return Path(settings.PROJECT_ROOT) / path
+
 def checker_index(request):
     print("Index view called")
     project_list = Project.objects.all()
@@ -54,7 +61,7 @@ def checker_index(request):
                 active_project_id = active_project.id
                 # 設定ファイルから設定ファイル名を取得
                 active_config_filename = os.path.basename(active_training.config_yaml_path) if active_training.config_yaml_path else ""
-                models_path = Path(settings.PROJECT_ROOT / active_training.saved_model_path)
+                models_path = resolve_project_root_path(active_training.saved_model_path)
                 
                 # グローバル変数のモデル状態をチェック
                 global model, model_loaded_training_id, model_loading
@@ -271,7 +278,7 @@ def load_model_async(training_run):
         if not training_run.saved_model_path:
             raise Exception("モデルパスが設定されていません")
         
-        models_path = Path(settings.PROJECT_ROOT / training_run.saved_model_path)
+        models_path = resolve_project_root_path(training_run.saved_model_path)
         if not models_path.exists():
             raise Exception(f"モデルファイルが存在しません: {models_path}")
         
