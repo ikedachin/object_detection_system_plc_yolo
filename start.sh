@@ -1,28 +1,42 @@
-# !/user/bin/env bash
+#!/usr/bin/env bash
 
-
-set -e # 途中でエラーが出たら即終了
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-echo "$SCRIPT_DIR"
+DJANGO_DIR="$SCRIPT_DIR/yolo_system"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
 
-PROJECT_DIR="$SCRIPT_DIR/inventry_checker"
-cd "$PROJECT_DIR"
+cd "$DJANGO_DIR"
 
-VENV_DIR="$PROJECT_DIR/.venv/bin/activate"
-# VENV_DIR="/.venv/bin/activate"
-# echo "env file: $VENV_DIR"
+cleanup() {
+  local exit_code=$?
+  trap - EXIT INT TERM
 
-PYTHON_APP="$PROJECT_DIR/inventry_checker/"
-# PYTHON_APP="/inventry_checker/manage.py"
-# echo "python file: $PYTHON_APP"
-cd "$PYTHON_APP"
+  if [[ -n "${PLC_PID:-}" ]] && kill -0 "$PLC_PID" 2>/dev/null; then
+    kill "$PLC_PID" 2>/dev/null || true
+  fi
 
-source "$VENV_DIR"
+  if [[ -n "${DJANGO_PID:-}" ]] && kill -0 "$DJANGO_PID" 2>/dev/null; then
+    kill "$DJANGO_PID" 2>/dev/null || true
+  fi
 
+  wait "${PLC_PID:-}" 2>/dev/null || true
+  wait "${DJANGO_PID:-}" 2>/dev/null || true
+  exit "$exit_code"
+}
 
-# FIXED_ARGS="runserver"
-python3 "manage.py" "runserver"
+trap cleanup EXIT INT TERM
 
+echo "Starting Django server..."
+"$PYTHON_BIN" manage.py runserver &
+DJANGO_PID=$!
 
-# command -v firefox >/dev/null 2?&1;
+echo "Starting PLC monitor..."
+"$PYTHON_BIN" manage.py run_plc_monitor &
+PLC_PID=$!
+
+echo "Django server PID: $DJANGO_PID"
+echo "PLC monitor PID: $PLC_PID"
+echo "Press Ctrl+C to stop both processes."
+
+wait -n "$DJANGO_PID" "$PLC_PID"
