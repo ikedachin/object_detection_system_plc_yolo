@@ -54,15 +54,49 @@ def configured_signals():
     return signals
 
 
+def configured_keys():
+    config = load_config()
+    monitor = config.get("monitor", {})
+    result_signal = config.get("result_signal", {})
+    return {
+        "trigger": bit_key(monitor["area"], monitor["word_address"], monitor["bit"]) if monitor else None,
+        "complete": bit_key(result_signal["complete"]["area"], result_signal["complete"]["word_address"], result_signal["complete"]["bit"]) if result_signal.get("complete") else None,
+        "ok": bit_key(result_signal["ok"]["area"], result_signal["ok"]["word_address"], result_signal["ok"]["bit"]) if result_signal.get("ok") else None,
+        "error": bit_key(result_signal["error"]["area"], result_signal["error"]["word_address"], result_signal["error"]["bit"]) if result_signal.get("error") else None,
+    }
+
+
+def initial_values():
+    keys = configured_keys()
+    return {
+        keys["trigger"]: 0,
+        keys["complete"]: 1,
+        keys["ok"]: 0,
+        keys["error"]: 0,
+    }
+
+
+def apply_initial_state():
+    ensure_configured_bits()
+    values = initial_values()
+    with memory_lock:
+        for key, value in values.items():
+            if key:
+                memory[key] = value
+        return {key: memory[key] for key in values if key}
+
+
 def ensure_configured_bits():
     with memory_lock:
+        defaults = initial_values()
         for _, signal in configured_signals():
-            memory.setdefault(bit_key(signal["area"], signal["word_address"], signal["bit"]), 0)
+            key = bit_key(signal["area"], signal["word_address"], signal["bit"])
+            memory.setdefault(key, defaults.get(key, 0))
 
 
 @app.on_event("startup")
 def startup():
-    ensure_configured_bits()
+    apply_initial_state()
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -138,7 +172,11 @@ def index():
       location.reload();
     }}
     async function setTrigger() {{
-      await fetch('/api/trigger', {{ method: 'POST' }});
+      const response = await fetch('/api/trigger', {{ method: 'POST' }});
+      if (!response.ok) {{
+        const data = await response.json();
+        alert(data.detail || 'Trigger is not allowed.');
+      }}
       location.reload();
     }}
     async function resetResults() {{
@@ -184,24 +222,24 @@ def set_trigger():
     config = load_config()
     monitor = config["monitor"]
     key = bit_key(monitor["area"], monitor["word_address"], monitor["bit"])
+    keys = configured_keys()
     with memory_lock:
+        trigger_is_off = memory.get(keys["trigger"], 0) == 0
+        complete_is_on = memory.get(keys["complete"], 0) == 1 if keys["complete"] else True
+        if not (trigger_is_off and complete_is_on):
+            from fastapi import HTTPException
+
+            raise HTTPException(
+                status_code=409,
+                detail="trigger is allowed only when trigger is OFF and complete is ON",
+            )
         memory[key] = 1
     return {"key": key, "value": 1}
 
 
 @app.post("/api/reset-results")
 def reset_results():
-    config = load_config()
-    result_signal = config.get("result_signal", {})
-    reset = {}
-    with memory_lock:
-        for name in ("complete", "ok", "error"):
-            signal = result_signal.get(name)
-            if not signal:
-                continue
-            key = bit_key(signal["area"], signal["word_address"], signal["bit"])
-            memory[key] = int(signal.get("reset_value", 0))
-            reset[key] = memory[key]
+    reset = apply_initial_state()
     return {"reset": reset}
 
 

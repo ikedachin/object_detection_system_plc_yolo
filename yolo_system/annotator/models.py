@@ -1,5 +1,6 @@
 from django.db import models
 import os
+from pathlib import Path
 from PIL import Image
 
 
@@ -70,14 +71,15 @@ class Project(models.Model):
         from django.conf import settings
         # configファイル名（拡張子除去）
         print(f"=== get_weight_path called for config: {config_filename} ===")
-        config_name = config_filename.split(os.sep)[0]
+        normalized_config = str(config_filename).replace('\\', '/')
+        config_name = normalized_config.split('/')[0]
         print(f"=== get_weight_path called for config: {config_name} ===")
         # プロジェクトフォルダのパス
-        project_root = os.path.join(settings.BASE_DIR.parent, 'projects', self.folder_name)
+        project_root = Path(settings.PROJECTS_DIR) / self.folder_name
         # ウエイトファイルパス
-        weight_path = os.path.join(project_root, 'models', config_name, 'train', 'weights', 'best.pt')
+        weight_path = project_root / 'models' / config_name / 'train' / 'weights' / 'best.pt'
         print(f"Weight path: {weight_path}")
-        return weight_path
+        return str(weight_path)
 
 
 class Label(models.Model):

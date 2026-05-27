@@ -4,7 +4,7 @@ from django.http import JsonResponse, HttpResponse, HttpResponseBadRequest
 from .models import TrainingRun
 from annotator.models import Project
 from training.applications.yolo_train import run_yolo_training
-import os, json, glob
+import os, json
 from django.conf import settings
 from pathlib import Path
 import platform
@@ -46,10 +46,10 @@ def get_projects_with_yaml(data_type):
     return projects
 
 def get_dataset_yamls(project_name, data_type):
-    base = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'projects', project_name, 'annotated', data_type)
-    yamls = glob.glob(os.path.join(base, '*.yaml')) + glob.glob(os.path.join(base, '*.yml'))
+    base = Path(settings.PROJECTS_DIR) / project_name / 'annotated' / data_type
+    yamls = list(base.glob('*.yaml')) + list(base.glob('*.yml'))
     # ファイル名とフルパスのペアで返す
-    return [{'name': os.path.basename(y), 'fullpath': y} for y in yamls]
+    return [{'name': y.name, 'fullpath': str(y)} for y in yamls]
 
 
 @csrf_exempt
@@ -99,9 +99,9 @@ def train_view(request):
             print(f"{key}: {value}")
 
         # DB登録
-        dataset_yaml_relative = str(Path(dataset_yaml).relative_to(Path(settings.PROJECT_ROOT)))
-        saved_model_path = str(Path(best_model_path).relative_to(Path(settings.PROJECT_ROOT)))
-        config_yaml_path_relative = str(Path(config_yaml_path).relative_to(Path(settings.PROJECT_ROOT)))
+        dataset_yaml_relative = Path(dataset_yaml).relative_to(Path(settings.PROJECT_ROOT)).as_posix()
+        saved_model_path = Path(best_model_path).relative_to(Path(settings.PROJECT_ROOT)).as_posix()
+        config_yaml_path_relative = Path(config_yaml_path).relative_to(Path(settings.PROJECT_ROOT)).as_posix()
 
         run = TrainingRun.objects.create(
             project=project,

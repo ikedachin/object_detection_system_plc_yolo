@@ -2,6 +2,7 @@ import datetime
 import json
 import os
 import threading
+from pathlib import Path
 from dataclasses import dataclass
 
 import cv2
@@ -28,6 +29,13 @@ image_size_dict = {
 pixes = image_size_dict['SD480p']
 camera = None
 snap_lock = threading.Lock()
+
+
+def resolve_project_root_path(path_value):
+    path = Path(str(path_value).replace('\\', '/'))
+    if path.is_absolute():
+        return path
+    return Path(settings.PROJECT_ROOT) / path
 
 
 def is_snap_running():
@@ -122,14 +130,13 @@ async def _ensure_model_loaded():
         raise RuntimeError('アクティブな学習モデルが見つかりません。プロジェクトと学習モデルを選択してください。')
 
     model_path = active_training.saved_model_path
-    if not os.path.isabs(model_path):
-        model_path = os.path.join(settings.PROJECT_ROOT, model_path)
+    model_path = resolve_project_root_path(model_path)
 
-    if not os.path.exists(model_path):
+    if not model_path.exists():
         raise RuntimeError(f'モデルファイルが見つかりません: {model_path}')
 
     try:
-        views.model = YOLO(model_path)
+        views.model = YOLO(str(model_path))
         views.model_loaded_training_id = active_training.id
         print(f"モデルを自動ロードしました: {active_training.training_name}")
     except Exception as exc:
@@ -169,12 +176,12 @@ def _load_detect_config(detect_config_path):
     print(f'Final config path: {detect_config_path}')
 
     if detect_config_path and not os.path.isabs(detect_config_path):
-        detect_config_path = os.path.join(settings.PROJECT_ROOT, detect_config_path)
+        detect_config_path = resolve_project_root_path(detect_config_path)
         print(f'Converted to absolute path: {detect_config_path}')
 
-    print(f'Config file exists: {os.path.exists(detect_config_path) if detect_config_path else "N/A"}')
+    print(f'Config file exists: {Path(detect_config_path).exists() if detect_config_path else "N/A"}')
 
-    if not detect_config_path or not os.path.exists(detect_config_path):
+    if not detect_config_path or not Path(detect_config_path).exists():
         raise RuntimeError('アクティブなプロジェクトまたは学習モデル、設定ファイルが見つかりません')
 
     try:

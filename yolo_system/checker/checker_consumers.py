@@ -3,6 +3,7 @@ import asyncio
 import datetime
 import json
 
+from channels.layers import get_channel_layer
 from channels.generic.websocket import AsyncWebsocketConsumer
 from checker.applications.snap_service import (
     ensure_camera_initialized,
@@ -23,6 +24,7 @@ class CheckerServerTime(AsyncWebsocketConsumer):
     async def connect(self):
         ensure_camera_initialized()
         await self.accept()
+        await self.channel_layer.group_add("checker_status", self.channel_name)
         self.send_task = asyncio.create_task(self.send_time())
 
     async def disconnect(self, close_code):
@@ -32,6 +34,7 @@ class CheckerServerTime(AsyncWebsocketConsumer):
                 await self.send_task
             except asyncio.CancelledError:
                 pass
+        await self.channel_layer.group_discard("checker_status", self.channel_name)
         stop_camera_if_running()
 
     async def send_time(self):
@@ -47,6 +50,9 @@ class CheckerServerTime(AsyncWebsocketConsumer):
             # print('checker consumers.py: ServerTime connected, sending time updates...')
             await self.send(text_data=json.dumps(send_dict))
             await asyncio.sleep(1)  # 1秒おきに送信  
+
+    async def send_checker_status(self, event):
+        await self.send(text_data=json.dumps(event["payload"]))
 
 
 #############################################################

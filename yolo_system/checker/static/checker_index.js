@@ -9,6 +9,68 @@ function showResult(text) {
   dr.innerHTML = text; // ←ここをtextContentからinnerHTMLに変更
   dr.style.display = 'block';
 }
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+function showErrorResult(message) {
+  const mainBg = document.getElementById("mainBg");
+  const resultCard = document.getElementById("resultCard");
+  mainBg.style.background = "#b22222";
+  mainBg.style.transition = "background 0.3s";
+  resultCard.style.background = "#b22222";
+  resultCard.style.color = "#fff";
+  resultCard.classList.add('detected');
+  showResult(
+    '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:180px;">' +
+    '<div style="font-size:1.8rem; font-weight:bold; text-align:center; margin-bottom:0.5em;">エラー</div>' +
+    `<div style="font-size:1rem; line-height:1.5; text-align:left;">${escapeHtml(message)}</div>` +
+    '</div>'
+  );
+}
+
+function renderDetectionResult(message) {
+  const mainBg = document.getElementById("mainBg");
+  const resultCard = document.getElementById("resultCard");
+  resultCard.classList.remove('detected');
+
+  if (message.result === false) {
+    mainBg.style.background = "#b22222";
+    mainBg.style.transition = "background 0.3s";
+    resultCard.style.background = "#b22222";
+    resultCard.style.color = "#fff";
+    resultCard.classList.add('detected');
+
+    let displayValue =
+      '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:180px;">' +
+      '<div style="font-size:2.2rem; font-weight:bold; text-align:center; margin-bottom:0.5em;">異常です！</div>';
+    for (const [key, val] of Object.entries(message.result_dict || {})) {
+      displayValue += `<div>${escapeHtml(key)}: ${escapeHtml(val)}</div>`;
+    }
+    displayValue += '</div>';
+    showResult(displayValue);
+  } else if (message.result === true) {
+    mainBg.style.background = "#228b22";
+    mainBg.style.transition = "background 0.3s";
+    resultCard.style.background = "#228b22";
+    resultCard.style.color = "#fff";
+    resultCard.classList.add('detected');
+
+    let displayValue = "";
+    for (const [key, val] of Object.entries(message.result_dict || {})) {
+      displayValue += `${escapeHtml(key)}: ${escapeHtml(val)}<br>`;
+    }
+    showResult(displayValue || "OK");
+  } else {
+    showErrorResult(message.error || "判定結果を取得できませんでした");
+  }
+}
 'use strict';
 
 const mainDisplay = document.getElementById("mainDisplays");
@@ -25,6 +87,15 @@ console.log("WebSocket for clock:", clock_url);
 
 ws_clock.onmessage = function(event) {
   const data = JSON.parse(event.data);
+  if (data.type === 'plc_status') {
+    if (data.status === 'error') {
+      showErrorResult(data.error || 'PLCトリガーによる判定に失敗しました');
+    } else if (data.status === 'completed') {
+      renderDetectedImageFromDataUrl(data.image_data_url);
+      renderDetectionResult(data);
+    }
+    return;
+  }
   // console.log(data);
   let miniClock = document.getElementById('miniClock');
   document.getElementById('miniClock').textContent = data.now_time;
@@ -107,6 +178,23 @@ const detectedImage = document.getElementById("detectedImage");
 const detectedResult = document.getElementById("detectedResult");
 const ctx_detected = detectedImage.getContext("2d");
 let detectionInProgress = false;
+
+function renderDetectedImageFromDataUrl(dataUrl) {
+  if (!dataUrl) {
+    return;
+  }
+
+  const detected_img = new Image();
+  detected_img.onload = () => {
+    console.log("Image loaded and rendered");
+    drawImageWithAspectRatio(detectedImage, ctx_detected, detected_img);
+    console.log("Detected image dimensions:", detected_img.naturalWidth, detected_img.naturalHeight);
+  };
+  detected_img.onerror = () => {
+    showErrorResult("判定画像の表示に失敗しました");
+  };
+  detected_img.src = dataUrl;
+}
 
 function setDetectionInProgress(inProgress) {
   detectionInProgress = inProgress;
@@ -216,10 +304,10 @@ snapButton.addEventListener("click", () => {
       detect();
     } else if (data.status === 'loading') {
       console.log("=== Model is loading ===");
-      alert("モデルロード中です。しばらくお待ちください。");
+      showErrorResult("モデルロード中です。しばらくお待ちください。");
     } else {
       console.log("=== Model not loaded ===");
-      alert("モデルがロードされていません。プロジェクトと学習モデルを選択してください。");
+      showErrorResult("モデルがロードされていません。プロジェクトと学習モデルを選択してください。");
     }
   })
   .catch(error => {
@@ -279,7 +367,6 @@ function detect() {
   console.log("Window location:", window.location);
   
   const ws_snap = new WebSocket(confirm_url);
-  const detected_img = new Image();
   
   ws_snap.binaryType = "blob"; 
   
@@ -298,9 +385,8 @@ function detect() {
   let connectionTimeout = setTimeout(() => {
     console.error("=== WebSocket connection timeout ===");
     ws_snap.close();
-    alert("接続がタイムアウトしました。再度お試しください。");
+    showErrorResult("接続がタイムアウトしました。再度お試しください。");
     setDetectionInProgress(false);
-    showWaiting();
   }, 10000); // 10秒でタイムアウト
 
   // WebSocket接続成功時にメッセージを送信
@@ -327,9 +413,8 @@ function detect() {
     console.error("WebSocket readyState:", ws_snap.readyState);
     console.error("WebSocket URL:", ws_snap.url);
     clearTimeout(connectionTimeout);
-    alert("WebSocket接続エラーが発生しました。モデルがロードされているか確認してください。");
+    showErrorResult("WebSocket接続エラーが発生しました。モデルがロードされているか確認してください。");
     setDetectionInProgress(false);
-    showWaiting();
   };
 
   // 接続終了時の処理
@@ -347,8 +432,7 @@ function detect() {
       console.error("Close code:", event.code);
       console.error("Close reason:", event.reason);
       if (event.code === 1006) {
-        alert("サーバーとの接続が予期せず切断されました。モデルがロードされているか確認してください。");
-        showWaiting();
+        showErrorResult("サーバーとの接続が予期せず切断されました。モデルがロードされているか確認してください。");
       }
     }
   };
@@ -362,12 +446,7 @@ function detect() {
       const detected = new FileReader();
   
       detected.onload = function(event) {
-        detected_img.onload = () => {
-          console.log("Image loaded and rendered");
-          drawImageWithAspectRatio(detectedImage, ctx_detected, detected_img);
-          console.log("Detected image dimensions:", detected_img.naturalWidth, detected_img.naturalHeight);
-        };
-        detected_img.src = detected.result;
+        renderDetectedImageFromDataUrl(detected.result);
       };
       detected.readAsDataURL(blob_still);
     } else {
@@ -380,72 +459,20 @@ function detect() {
         // エラーメッセージの処理
         if (message.error) {
           console.error("=== Server error ===", message.error);
-          alert("エラー: " + message.error);
+          showErrorResult(message.error);
           setDetectionInProgress(false);
-          showWaiting();
           return;
         }
         
         console.log("Detection result:", message.result);
         console.log("result_dict:", message.result_dict);
         
-        const mainBg = document.getElementById("mainBg");
-        const resultCard = document.getElementById("resultCard");
-        // まず全ての状態をリセット
-        resultCard.classList.remove('detected');
-        if (message.result === false) {
-          console.log("Detection result: ABNORMAL");
-          mainBg.style.background = "#b22222"; // 赤
-          mainBg.style.transition = "background 0.3s";
-          resultCard.style.background = "#b22222";
-          resultCard.style.color = "#fff";
-          resultCard.classList.add('detected');
-
-          let displayValue =
-            '<div style="display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:180px;">' +
-            '<div style="font-size:2.2rem; font-weight:bold; text-align:center; margin-bottom:0.5em;">' +
-            '⚠️ 異常です！' +
-            '</div>';
-          for (const [key, val] of Object.entries(message.result_dict)) {
-            console.log(`Key: ${key}, Value: ${val}`);
-            displayValue += `<div>${key}: ${val}</div>`;
-          }
-          displayValue += '</div>';
-          console.log("Final value to show:", displayValue);
-          showResult(`${displayValue}`);
-          
-        } else if (message.result === true) {
-          console.log("Detection result: NORMAL");
-          console.log("Result dict:", message.result_dict);
-          mainBg.style.background = "#228b22"; // グリーン
-          mainBg.style.transition = "background 0.3s";
-          resultCard.style.background = "#228b22";
-          resultCard.style.color = "#fff";
-          resultCard.classList.add('detected');
-
-          let displayValue = "";
-          for (const [key, val] of Object.entries(message.result_dict)) {
-            console.log(`Key: ${key}, Value: ${val}`);
-            displayValue += `${key}: ${val}<br>`;
-          }
-          console.log("Final value to show:", displayValue);
-          showResult(`${displayValue}`);
-
-        } else {
-          console.log("Detection result: UNKNOWN");
-          mainBg.style.background = "#bfc7cc";
-          mainBg.style.transition = "background 0.3s";
-          resultCard.style.background = "#23272b";
-          resultCard.style.color = "#f4f6f8";
-          resultCard.classList.remove('detected');
-          showWaiting();
-        }
+        renderDetectionResult(message);
       } catch (parseError) {
         console.error("Error parsing JSON message:", parseError);
         console.error("Raw message data:", evt.data);
-        alert("サーバーからの応答の解析に失敗しました");
+        showErrorResult("サーバーからの応答の解析に失敗しました");
         setDetectionInProgress(false);
-        showWaiting();
       }
     }
   }

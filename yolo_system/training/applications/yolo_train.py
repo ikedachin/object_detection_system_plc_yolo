@@ -20,7 +20,7 @@ def run_yolo_training(model_name, data_yaml, epochs, imgsz, batch, device, save_
 
     if save_dir:
         save_dir = Path(settings.PROJECTS_DIR) / save_dir 
-        params['project'] = save_dir
+        params['project'] = str(save_dir)
         params['exist_ok'] = True
     print(f"Training YOLO model: {model_name} on {data_yaml} with epochs={epochs}, imgsz={imgsz}, batch={batch}, device={device}")
     model = YOLO(model_name)
@@ -55,7 +55,7 @@ def run_yolo_training(model_name, data_yaml, epochs, imgsz, batch, device, save_
         detect_cond = yaml.safe_load(f)
     # print(f"Base detect YAML: {detect_cond}")
     # 学習済みウェイトのパスを設定
-    detect_cond['YOLO']['model_path'] = str(save_dir / 'weights' / 'best.pt')
+    detect_cond['YOLO']['model_path'] = str(save_dir / 'train' / 'weights' / 'best.pt')
 
     # 設定ファイルのパスを設定（推論・検出共通）
     config_yaml_path = save_dir / 'train' / 'weights' / 'detect.yaml'
@@ -67,7 +67,7 @@ def run_yolo_training(model_name, data_yaml, epochs, imgsz, batch, device, save_
 
     best_model_path = None
     if hasattr(results, 'save_dir'):
-        weights_dir = os.path.join(results.save_dir, 'weights')
-        if os.path.exists(os.path.join(weights_dir, 'best.pt')):
-            best_model_path = os.path.join(weights_dir, 'best.pt')
+        weights_dir = Path(results.save_dir) / 'weights'
+        if (weights_dir / 'best.pt').exists():
+            best_model_path = str(weights_dir / 'best.pt')
     return metrics, best_model_path, str(config_yaml_path), params

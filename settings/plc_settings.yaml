@@ -8,8 +8,10 @@ test_server:
   base_url: "http://127.0.0.1:8010"
 
 connection:
-  host: "192.168.250.1"
-  port: 9600
+  host: "127.0.0.1"
+  port: 8010
+  # host: "192.168.250.1"
+  # port: 9600
   plc_node: 1
   pc_node: 25
   timeout: 3.0
@@ -43,5 +45,4 @@ result_signal:
   reset_by_equipment: true
 
 behavior:
-  reset_on_success: true
   reset_value: 0

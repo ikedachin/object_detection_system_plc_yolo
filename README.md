@@ -180,8 +180,9 @@ Djangoプロジェクト本体の設定・ルーティング・ASGI/WGIエント
       ```
    - venvを使う場合
       ```bash
-      python3 -m venv .venv
-      source .venv/bin/activate
+      python -m venv .venv
+      # macOS/Linux: source .venv/bin/activate
+      # Windows: .venv\Scripts\activate
       pip install -r requirements.txt
       ```
 
@@ -194,7 +195,7 @@ Djangoプロジェクト本体の設定・ルーティング・ASGI/WGIエント
       ```
    - venvを使う場合
       ```bash
-      source .venv/bin/activate
+      # 先に仮想環境を有効化
       cd yolo_system
       python manage.py makemigrations
       python manage.py migrate
@@ -210,19 +211,22 @@ Djangoサーバーを起動:
       uv run python manage.py runserver
       ```
 
-
-   - uvを使う場合
+   - venvを使う場合
       ```bash
-      source .venv/bin/activate
+      # 先に仮想環境を有効化
       cd yolo_system
       python manage.py runserver
       ```
 
-   - または、提供されているスクリプトを使用
+   - DjangoサーバーとPLC監視をまとめて起動する場合
       ```bash
-      ./start.sh
+      # macOS/Linux
+      python3 start.py
+
+      # Windows
+      py start.py
       ```
-      このスクリプトは Django サーバーと PLC監視コマンドを同時に起動します。
+      macOS/Linuxでは `./start.sh`、Windowsでは `yolo_system.bat` からも同じ `start.py` を起動できます。
 
 ### PLC監視スクリプト
 
@@ -235,7 +239,7 @@ plc:
   enabled: false
 
 test_server:
-  enabled: false
+  enabled: true
   host: "127.0.0.1"
   port: 8010
   base_url: "http://127.0.0.1:8010"
@@ -276,7 +280,6 @@ result_signal:
   reset_by_equipment: true
 
 behavior:
-  reset_on_success: true
   reset_value: 0
 ```
 
@@ -286,17 +289,25 @@ behavior:
 - 実PLCへ接続する場合は、使用するFINSライブラリを別途導入してください。`pyfins` はPyPIに通常パッケージとして公開されていないため、GitHub配布版など実環境で使う実装に合わせて導入し、`checker/applications/plc_monitor.py` の `PlcClient` adapterを最終確認してください。
 - GitHub版 `pyfins` を導入する補助スクリプトとして、macOS/Linux用の `install_pyfins.sh` とWindows用の `install_pyfins.bat` を用意しています。
 - `monitor` は現場スイッチONで立つ監視対象ビットです。上記例では `D100.00` を監視します。
-- `result_signal.complete` は判定完了通知ビットです。上記例では判定完了時に `D200.00` をONにします。
-- `result_signal.ok` はOK/NG値ビットです。上記例では `D200.01=1` がOK、`D200.01=0` がNGです。設備側は `D200.00` のONを見てから `D200.01` を読み取ります。
-- `result_signal.error` は処理エラー通知ビットです。カメラ取得、モデル、推論などで判定処理自体が失敗した場合に `D200.02` をONにします。
-- 結果通知ビットは設備側で読み取った後にリセットする前提です。監視スクリプトは `D200.00` がONの間、新しいPLCトリガーを処理せず待機します。
-- snap処理が完了した場合は、判定OK/NGに関係なく監視対象ビットを `reset_value` に戻します。判定NGでも次回の現場スイッチONでリトライできます。
-- カメラ取得、推論、設定エラーなどでsnap処理自体が失敗した場合はエラー通知ビットをONにし、監視対象ビットは戻しません。
+- `result_signal.complete` は次トリガー許可ビットです。初期状態とNG/処理エラー時にON、判定実行中とOK時にOFFになります。
+- `result_signal.ok` はOK通知ビットです。判定OK時にONになります。設備側はこのONを確認して設備を動かした後、初期状態へ戻してください。
+- `result_signal.error` はNGまたは処理エラー通知ビットです。判定NG、カメラ取得、モデル、推論などで判定処理自体が失敗した場合にONになります。
+- 初期状態は `trigger=OFF`、`complete=ON`、`ok=OFF`、`error=OFF` です。`trigger=OFF` かつ `complete=ON` のときだけ新しいトリガーを受け付けます。
+- `trigger` を検知した直後に、二重起動防止のため `trigger`、`complete`、`ok`、`error` をすべてOFFにしてからsnap/推論処理を実行します。
+- 判定OK時は `ok=ON`、`complete=OFF`、`error=OFF` にします。設備側がOKを確認して設備を動かした後、初期状態へ戻す前提です。
+- 判定NG時は `error=ON`、`complete=ON`、`ok=OFF` にします。この状態では次の `trigger` を受け付けられます。
 - 判定処理中はPLCポーリングを停止します。Web画面の `snapButton` とPLC監視が同時に判定処理を走らせないよう、共通ロックで排他制御しています。
-- PLC監視スクリプトは `/tmp/yolo_system_plc_monitor.lock` で二重起動を防止します。2つ目のプロセスは起動時に終了します。
-- 画面右上の `PLC結果リセット` ボタンで、`complete`、`ok`、`error` の各結果ビットを `reset_value` に戻し、画面表示も初期状態へ戻します。このボタンは検査開始ボタンから離した場所に配置しています。
+- PLC監視スクリプトはOSの一時ディレクトリ上の `yolo_system_plc_monitor.lock` で二重起動を防止します。2つ目のプロセスは起動時に終了します。
+- 画面右上の `PLC結果リセット` ボタンで、`trigger=OFF`、`complete=ON`、`ok=OFF`、`error=OFF` の初期状態に戻します。このボタンは検査開始ボタンから離した場所に配置しています。
 
-PLC監視コマンドを起動:
+Djangoサーバーを起動すると、PLC監視も同じプロセス内のバックグラウンドスレッドで起動します。
+
+```bash
+cd yolo_system
+python manage.py runserver
+```
+
+PLC監視だけを単独で確認する場合:
 
 ```bash
 source .venv/bin/activate
