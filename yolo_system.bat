@@ -18,6 +18,9 @@ cd %folder%yolo_system\yolo_system
 REM サーバーを起動（バックグラウンドで実行）
 start /B python manage.py runserver
 
+REM PLCモニターを起動（バックグラウンドで実行）
+start /B python manage.py run_plc_monitor
+
 REM 15秒待機
 timeout /t 15 /nobreak > nul
 
