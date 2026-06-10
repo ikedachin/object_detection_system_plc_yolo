@@ -12,6 +12,16 @@ import torch
 from datetime import datetime
 
 
+TRAINING_AUGMENTATION_PARAMS = {
+    'flipud': 0.0,
+    'fliplr': 0.5,
+    'mixup': 0.0,
+    'perspective': 0.0,
+    'shear': 0.0,
+    'scale': 0.5,
+}
+
+
 if platform.system() == 'Windows':
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
 elif platform.system() == 'Linux':
@@ -52,6 +62,20 @@ def get_dataset_yamls(project_name, data_type):
     return [{'name': y.name, 'fullpath': str(y)} for y in yamls]
 
 
+def parse_training_augmentation_params(data):
+    params = {}
+    for name, default in TRAINING_AUGMENTATION_PARAMS.items():
+        raw_value = data.get(name, default)
+        try:
+            value = float(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f'{name}には0から1までの数値を入力してください')
+        if not 0.0 <= value <= 1.0:
+            raise ValueError(f'{name}には0から1までの数値を入力してください')
+        params[name] = value
+    return params
+
+
 @csrf_exempt
 def train_view(request):
     if request.method == 'POST':
@@ -85,6 +109,13 @@ def train_view(request):
             other_params = json.loads(other_params)
         except Exception:
             other_params = {}
+
+        try:
+            augmentation_params = parse_training_augmentation_params(data)
+        except ValueError as e:
+            return JsonResponse({'success': False, 'error': str(e)})
+
+        other_params.update(augmentation_params)
         
         # save_dirを学習名ベースに変更
         save_dir = Path(settings.PROJECTS_DIR) / project.folder_name / 'models' / training_name
@@ -112,6 +143,12 @@ def train_view(request):
             epochs=epochs,
             imgsz=imgsz,
             batch=batch,
+            flipud=augmentation_params['flipud'],
+            fliplr=augmentation_params['fliplr'],
+            mixup=augmentation_params['mixup'],
+            perspective=augmentation_params['perspective'],
+            shear=augmentation_params['shear'],
+            scale=augmentation_params['scale'],
             other_params=other_params,
             saved_model_path=saved_model_path,
             config_yaml_path=config_yaml_path_relative,
