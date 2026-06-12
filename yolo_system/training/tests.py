@@ -5,7 +5,41 @@ from django.conf import settings
 from django.test import TestCase
 
 from annotator.models import Project
+from training.applications.yolo_train import _collect_epoch_metrics
 from training.models import TrainingRun
+
+
+class TrainingMetricCollectionTests(TestCase):
+    def test_collect_epoch_metrics_includes_train_box_and_cls_loss(self):
+        class FakeTrainer:
+            tloss = [1.23456, 0.45678, 0.11111]
+            metrics = {'metrics/mAP50(B)': 0.98765}
+
+            def label_loss_items(self, loss_items, prefix='train'):
+                return {
+                    f'{prefix}/box_loss': loss_items[0],
+                    f'{prefix}/cls_loss': loss_items[1],
+                    f'{prefix}/dfl_loss': loss_items[2],
+                }
+
+        metrics = _collect_epoch_metrics(FakeTrainer())
+
+        self.assertEqual(metrics['train/box_loss'], 1.2346)
+        self.assertEqual(metrics['train/cls_loss'], 0.4568)
+        self.assertEqual(metrics['train/dfl_loss'], 0.1111)
+        self.assertEqual(metrics['metrics/mAP50(B)'], 0.9877)
+
+    def test_collect_epoch_metrics_keeps_existing_metrics_without_tloss(self):
+        class FakeTrainer:
+            tloss = None
+            metrics = {
+                'metrics/precision(B)': '0.76543',
+                'non_numeric': 'not available',
+            }
+
+        metrics = _collect_epoch_metrics(FakeTrainer())
+
+        self.assertEqual(metrics, {'metrics/precision(B)': 0.7654})
 
 
 class TrainViewParameterTests(TestCase):

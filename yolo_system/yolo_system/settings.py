@@ -168,10 +168,9 @@ STATICFILES_DIRS = [
     # os.path.join(BASE_DIR, 'static'),
 ]
 
-# ファイルアップロード数の上限を2000に設定。
-# django.http.multipartparser.MultiPartParserクラスで、アップロードファイル数がこの設定値を超えていないか自動チェックする。
-# 設定しておけばOK
-DATA_UPLOAD_MAX_NUMBER_FILES = 2000
+# プロジェクト追加画面ではフォルダ単位で大量の画像を選択するため、Djangoのmultipart層のファイル数上限は無効化する。
+# 画像種別や登録可否はconfiguration.add_project側で検証する。
+DATA_UPLOAD_MAX_NUMBER_FILES = None
 
 # Media files (User uploaded content)
 # MEDIA_URL = '/media/'

@@ -45,7 +45,12 @@ class Project(models.Model):
     def get_project_path(self):
         """プロジェクトフォルダのパスを取得"""
         from django.conf import settings
-        return self.save_path or os.path.join(settings.BASE_DIR.parent, 'projects', self.folder_name)
+        if self.save_path:
+            path = Path(self.save_path)
+            if path.is_absolute():
+                return str(path)
+            return str(Path(settings.BASE_DIR.parent) / path)
+        return os.path.join(settings.BASE_DIR.parent, 'projects', self.folder_name)
     
     def get_image_count(self):
         """プロジェクト内の画像数を取得"""

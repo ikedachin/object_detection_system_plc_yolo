@@ -210,6 +210,81 @@
         #trainForm .btn-primary.mt-3:active {
             color: #222;
         }
+        .training-progress-panel {
+            display: none;
+            border: 1.5px solid #a5d6a7;
+            border-radius: 0.5rem;
+            background: rgba(255,255,255,0.88);
+            padding: 1rem;
+        }
+        .training-progress-panel.active {
+            display: block;
+        }
+        .training-progress-bar {
+            height: 1.35rem;
+            font-weight: 700;
+            color: #111;
+            background-color: #d7f0d9;
+        }
+        .training-progress-bar .progress-bar {
+            background: linear-gradient(90deg, #43e97b 0%, #38f9d7 100%);
+            color: #111;
+        }
+        .training-metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 0.75rem;
+        }
+        .training-metric-card {
+            border: 1px solid #d7ead8;
+            border-radius: 0.5rem;
+            background: #fff;
+            padding: 0.75rem;
+        }
+        .training-metric-name {
+            color: #388e3c;
+            font-size: 0.85rem;
+            font-weight: 700;
+            overflow-wrap: anywhere;
+        }
+        .training-metric-value {
+            color: #111;
+            font-size: 1.25rem;
+            font-weight: 800;
+        }
+        .training-chart-wrap {
+            position: relative;
+            width: 100%;
+            min-height: 280px;
+            margin-bottom: 1rem;
+        }
+        .training-chart-title {
+            color: #2e7d32;
+            font-weight: 700;
+            margin-bottom: 0.35rem;
+        }
+        .training-chart {
+            width: 100%;
+            height: 280px;
+            display: block;
+        }
+        .training-chart-legend {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem 1rem;
+            font-size: 0.9rem;
+        }
+        .training-legend-item {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.35rem;
+        }
+        .training-legend-color {
+            width: 0.8rem;
+            height: 0.8rem;
+            border-radius: 999px;
+            display: inline-block;
+        }
     </style>
 </head>
 <body>
@@ -512,7 +587,39 @@
           <textarea class="form-control" id="other_params" name="other_params" rows="4">{"workers": 1}</textarea>
         </div>
       </div>
-      <div id="metricsArea" class="mt-4"></div>
+      <div id="metricsArea" class="training-progress-panel mt-4">
+        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-2">
+          <div>
+            <strong>学習進捗</strong>
+            <div class="text-muted small">学習が終わるまでストップすることはできません。</div>
+          </div>
+          <div id="epochLabel" class="fw-bold">Epoch: 0 / 0</div>
+        </div>
+        <div class="progress training-progress-bar mb-3" role="progressbar" aria-label="学習進捗" aria-valuemin="0" aria-valuemax="100">
+          <div id="epochProgressBar" class="progress-bar" style="width: 0%;">0%</div>
+        </div>
+        <div id="metricsCards" class="training-metrics-grid mb-3"></div>
+        <div class="training-chart-wrap">
+          <div class="training-chart-title">box loss</div>
+          <canvas id="boxLossChart" class="training-chart" width="900" height="280"></canvas>
+          <div id="boxLossLegend" class="training-chart-legend mt-2"></div>
+        </div>
+        <div class="training-chart-wrap">
+          <div class="training-chart-title">cls loss</div>
+          <canvas id="clsLossChart" class="training-chart" width="900" height="280"></canvas>
+          <div id="clsLossLegend" class="training-chart-legend mt-2"></div>
+        </div>
+        <div class="training-chart-wrap">
+          <div class="training-chart-title">dfl loss</div>
+          <canvas id="dflLossChart" class="training-chart" width="900" height="280"></canvas>
+          <div id="dflLossLegend" class="training-chart-legend mt-2"></div>
+        </div>
+        <div class="training-chart-wrap">
+          <div class="training-chart-title">metrics / precision recall mAP</div>
+          <canvas id="metricsChart" class="training-chart" width="900" height="280"></canvas>
+          <div id="metricsLegend" class="training-chart-legend mt-2"></div>
+        </div>
+      </div>
       <div class="center-btn mt-4">
           <button type="submit" class="btn btn-primary mt-3" id="trainSubmitBtn">
             <span class="btn-text"><i class="bi bi-rocket-takeoff"></i> 学習スタート</span>
@@ -638,6 +745,329 @@
       });
     });
 
+    const metricsArea = document.getElementById('metricsArea');
+    const epochLabel = document.getElementById('epochLabel');
+    const epochProgressBar = document.getElementById('epochProgressBar');
+    const metricsCards = document.getElementById('metricsCards');
+    const metricsHistory = [];
+    const chartColors = ['#2e7d32', '#1565c0', '#c62828', '#ef6c00', '#6a1b9a', '#00838f'];
+    const preferredMetricWords = ['box_loss', 'cls_loss', 'dfl_loss', 'precision', 'recall', 'map'];
+    const chartConfigs = [
+      {
+        canvas: document.getElementById('boxLossChart'),
+        legend: document.getElementById('boxLossLegend'),
+        axisLabel: 'box loss',
+        emptyText: 'box lossを受信するとグラフを表示します。',
+        axisSide: 'left',
+        matches: key => normalizeMetricKey(key).includes('box_loss'),
+        rank: key => normalizeMetricKey(key).startsWith('train/') ? 0 : 1,
+      },
+      {
+        canvas: document.getElementById('clsLossChart'),
+        legend: document.getElementById('clsLossLegend'),
+        axisLabel: 'cls loss',
+        emptyText: 'cls lossを受信するとグラフを表示します。',
+        axisSide: 'left',
+        matches: key => normalizeMetricKey(key).includes('cls_loss'),
+        rank: key => normalizeMetricKey(key).startsWith('train/') ? 0 : 1,
+      },
+      {
+        canvas: document.getElementById('dflLossChart'),
+        legend: document.getElementById('dflLossLegend'),
+        axisLabel: 'dfl loss',
+        emptyText: 'dfl lossを受信するとグラフを表示します。',
+        axisSide: 'left',
+        matches: key => normalizeMetricKey(key).includes('dfl_loss'),
+        rank: key => normalizeMetricKey(key).startsWith('train/') ? 0 : 1,
+      },
+      {
+        canvas: document.getElementById('metricsChart'),
+        legend: document.getElementById('metricsLegend'),
+        axisLabel: 'metrics',
+        emptyText: 'precision / recall / mAPを受信するとグラフを表示します。',
+        axisSide: 'right',
+        matches: key => {
+          const normalized = normalizeMetricKey(key);
+          return normalized.includes('precision') || normalized.includes('recall') || normalized.includes('map');
+        },
+        rank: key => {
+          const normalized = normalizeMetricKey(key);
+          if (normalized.includes('precision')) return 0;
+          if (normalized.includes('recall')) return 1;
+          if (normalized.includes('map50') && !normalized.includes('map50_95')) return 2;
+          if (normalized.includes('map')) return 3;
+          return 4;
+        },
+      },
+    ];
+
+    function resetTrainingProgress() {
+      metricsHistory.length = 0;
+      if (metricsArea) {
+        metricsArea.classList.add('active');
+      }
+      if (epochLabel) {
+        epochLabel.textContent = 'Epoch: 0 / 0';
+      }
+      if (epochProgressBar) {
+        epochProgressBar.style.width = '0%';
+        epochProgressBar.textContent = '0%';
+        epochProgressBar.setAttribute('aria-valuenow', '0');
+      }
+      if (metricsCards) {
+        metricsCards.innerHTML = '';
+      }
+      chartConfigs.forEach(config => {
+        if (config.legend) {
+          config.legend.innerHTML = '';
+        }
+      });
+      drawTrainingCharts();
+    }
+
+    function normalizeMetricKey(key) {
+      return String(key).toLowerCase().replace(/[\s-]+/g, '_');
+    }
+
+    function toFiniteNumber(value) {
+      const numberValue = Number(value);
+      return Number.isFinite(numberValue) ? numberValue : null;
+    }
+
+    function formatMetricValue(value) {
+      const numberValue = toFiniteNumber(value);
+      if (numberValue === null) {
+        return String(value);
+      }
+      return Math.abs(numberValue) >= 100 ? numberValue.toFixed(2) : numberValue.toFixed(4);
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    function metricRank(key) {
+      const normalized = normalizeMetricKey(key);
+      const index = preferredMetricWords.findIndex(word => normalized.includes(word));
+      return index === -1 ? preferredMetricWords.length : index;
+    }
+
+    function getChartScale(metricKeys) {
+      const values = [];
+      metricKeys.forEach(key => {
+        metricsHistory.forEach(point => {
+          const value = toFiniteNumber(point.metrics[key]);
+          if (value !== null) {
+            values.push(value);
+          }
+        });
+      });
+      if (values.length === 0) {
+        return null;
+      }
+      let min = Math.min(...values);
+      let max = Math.max(...values);
+      if (min === max) {
+        min -= 1;
+        max += 1;
+      }
+      return { min, max, range: max - min };
+    }
+
+    function getChartMetricKeys(config) {
+      const keySet = new Set();
+      metricsHistory.forEach(point => {
+        Object.entries(point.metrics).forEach(([key, value]) => {
+          if (config.matches(key) && toFiniteNumber(value) !== null) {
+            keySet.add(key);
+          }
+        });
+      });
+      return Array.from(keySet)
+        .sort((a, b) => config.rank(a) - config.rank(b) || a.localeCompare(b))
+        .slice(0, 6);
+    }
+
+    function updateProgressDisplay(epoch, totalEpochs) {
+      const safeEpoch = Math.max(0, Number(epoch) || 0);
+      const safeTotal = Math.max(0, Number(totalEpochs) || 0);
+      const percent = safeTotal > 0 ? Math.min(100, Math.round((safeEpoch / safeTotal) * 100)) : 0;
+      if (epochLabel) {
+        epochLabel.textContent = `Epoch: ${safeEpoch} / ${safeTotal}`;
+      }
+      if (epochProgressBar) {
+        epochProgressBar.style.width = `${percent}%`;
+        epochProgressBar.textContent = `${percent}%`;
+        epochProgressBar.setAttribute('aria-valuenow', String(percent));
+      }
+    }
+
+    function updateMetricCards(metrics) {
+      if (!metricsCards) {
+        return;
+      }
+      const entries = Object.entries(metrics || {}).sort((a, b) => metricRank(a[0]) - metricRank(b[0]) || a[0].localeCompare(b[0]));
+      if (entries.length === 0) {
+        metricsCards.innerHTML = '<div class="text-muted">メトリクスを待機中です。</div>';
+        return;
+      }
+      metricsCards.innerHTML = entries.map(([key, value]) => `
+        <div class="training-metric-card">
+          <div class="training-metric-name">${escapeHtml(key)}</div>
+          <div class="training-metric-value">${escapeHtml(formatMetricValue(value))}</div>
+        </div>
+      `).join('');
+    }
+
+    function drawTrainingCharts() {
+      chartConfigs.forEach(drawMetricChart);
+    }
+
+    function drawMetricChart(config) {
+      const canvas = config.canvas;
+      if (!canvas) {
+        return;
+      }
+      const ctx = canvas.getContext('2d');
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(320, Math.floor(rect.width || canvas.width));
+      const height = 280;
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+
+      const padding = { top: 18, right: 62, bottom: 36, left: 62 };
+      const plotWidth = width - padding.left - padding.right;
+      const plotHeight = height - padding.top - padding.bottom;
+
+      ctx.strokeStyle = '#d7ead8';
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 4; i++) {
+        const y = padding.top + (plotHeight * i / 4);
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(width - padding.right, y);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = '#8fbf91';
+      ctx.beginPath();
+      ctx.moveTo(padding.left, padding.top);
+      ctx.lineTo(padding.left, height - padding.bottom);
+      ctx.moveTo(width - padding.right, padding.top);
+      ctx.lineTo(width - padding.right, height - padding.bottom);
+      ctx.moveTo(padding.left, height - padding.bottom);
+      ctx.lineTo(width - padding.right, height - padding.bottom);
+      ctx.stroke();
+
+      const metricKeys = getChartMetricKeys(config);
+      if (metricsHistory.length === 0 || metricKeys.length === 0) {
+        ctx.fillStyle = '#6c757d';
+        ctx.font = '14px sans-serif';
+        ctx.fillText(config.emptyText, padding.left, padding.top + 28);
+        if (config.legend) {
+          config.legend.innerHTML = '';
+        }
+        return;
+      }
+
+      const scale = getChartScale(metricKeys);
+      const firstEpoch = metricsHistory[0].epoch;
+      const lastEpoch = metricsHistory[metricsHistory.length - 1].epoch;
+      const epochRange = Math.max(1, lastEpoch - firstEpoch);
+
+      ctx.fillStyle = '#6c757d';
+      ctx.font = '12px sans-serif';
+      if (scale && config.axisSide === 'left') {
+        ctx.textAlign = 'right';
+        ctx.fillText(scale.max.toFixed(3), padding.left - 8, padding.top + 4);
+        ctx.fillText(scale.min.toFixed(3), padding.left - 8, height - padding.bottom);
+        ctx.fillText(config.axisLabel, padding.left - 8, padding.top + 20);
+      }
+      if (scale && config.axisSide === 'right') {
+        ctx.textAlign = 'left';
+        ctx.fillText(scale.max.toFixed(3), width - padding.right + 8, padding.top + 4);
+        ctx.fillText(scale.min.toFixed(3), width - padding.right + 8, height - padding.bottom);
+        ctx.fillText(config.axisLabel, width - padding.right + 8, padding.top + 20);
+      }
+      ctx.textAlign = 'left';
+      ctx.fillText(`Epoch ${firstEpoch}`, padding.left, height - 10);
+      ctx.textAlign = 'right';
+      ctx.fillText(`Epoch ${lastEpoch}`, width - padding.right, height - 10);
+      ctx.textAlign = 'left';
+
+      metricKeys.forEach((key, index) => {
+        const color = chartColors[index % chartColors.length];
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        let hasPoint = false;
+        metricsHistory.forEach(point => {
+          const value = toFiniteNumber(point.metrics[key]);
+          if (value === null) {
+            return;
+          }
+          if (!scale) {
+            return;
+          }
+          const x = padding.left + ((point.epoch - firstEpoch) / epochRange) * plotWidth;
+          const y = padding.top + ((scale.max - value) / scale.range) * plotHeight;
+          if (hasPoint) {
+            ctx.lineTo(x, y);
+          } else {
+            ctx.moveTo(x, y);
+            hasPoint = true;
+          }
+        });
+        ctx.stroke();
+        metricsHistory.forEach(point => {
+          const value = toFiniteNumber(point.metrics[key]);
+          if (value === null) {
+            return;
+          }
+          if (!scale) {
+            return;
+          }
+          const x = padding.left + ((point.epoch - firstEpoch) / epochRange) * plotWidth;
+          const y = padding.top + ((scale.max - value) / scale.range) * plotHeight;
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      });
+
+      if (config.legend) {
+        config.legend.innerHTML = metricKeys.map((key, index) => `
+          <span class="training-legend-item">
+            <span class="training-legend-color" style="background:${chartColors[index % chartColors.length]}"></span>
+            ${escapeHtml(key)}
+          </span>
+        `).join('');
+      }
+    }
+
+    function updateTrainingProgress(data) {
+      const epoch = Number(data.epoch) || 0;
+      const totalEpochs = Number(data.total_epochs) || 0;
+      const metrics = data.metrics || {};
+      if (metricsArea) {
+        metricsArea.classList.add('active');
+      }
+      updateProgressDisplay(epoch, totalEpochs);
+      updateMetricCards(metrics);
+      metricsHistory.push({ epoch, metrics });
+      drawTrainingCharts();
+    }
+
     // 学習ボタンのアニメーション
     const trainForm = document.getElementById('trainForm');
     const trainBtn = document.getElementById('trainSubmitBtn');
@@ -655,6 +1085,7 @@
         btnText.textContent = '学習中...';
         trainSpinner.classList.remove('d-none');
         trainBtn.disabled = true;
+        resetTrainingProgress();
         // trainResultを非表示にする
         const trainResult = document.getElementById('trainResult');
         if (trainResult) {
@@ -678,20 +1109,14 @@
       }
     }
 
+    window.addEventListener('resize', drawTrainingCharts);
+
     // YOLO学習進捗WebSocket受信
-    const metricsArea = document.getElementById('metricsArea');
     const ws_scheme = window.location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${ws_scheme}://${window.location.host}/ws/yolo_training/`);
     ws.onmessage = function(event) {
       const data = JSON.parse(event.data);
-      const epoch = data.epoch;
-      const total_epochs = data.total_epochs;
-      const metrics = data.metrics;
-      let html = `学習が終わるまでストップすることはできません。<br><br><b>Epoch: ${epoch} / ${total_epochs}</b><br>`;
-      for (const [k, v] of Object.entries(metrics)) {
-        html += `${k}: ${v}<br>`;
-      }
-      metricsArea.innerHTML = html;
+      updateTrainingProgress(data);
     };
   });
 </script>

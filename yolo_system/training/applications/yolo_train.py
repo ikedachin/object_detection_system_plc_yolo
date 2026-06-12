@@ -6,6 +6,31 @@ from asgiref.sync import async_to_sync
 from channels.layers import get_channel_layer
 import yaml
 
+
+def _format_training_metrics(metrics):
+    formatted = {}
+    for key, value in metrics.items():
+        try:
+            formatted[key] = float(f"{float(value):.4f}")
+        except (TypeError, ValueError):
+            continue
+    return formatted
+
+
+def _collect_epoch_metrics(trainer):
+    metrics = {}
+    tloss = getattr(trainer, 'tloss', None)
+    label_loss_items = getattr(trainer, 'label_loss_items', None)
+    if tloss is not None and callable(label_loss_items):
+        try:
+            metrics.update(label_loss_items(tloss))
+        except (TypeError, ValueError, AttributeError):
+            pass
+
+    metrics.update(getattr(trainer, 'metrics', {}) or {})
+    return _format_training_metrics(metrics)
+
+
 def run_yolo_training(model_name, data_yaml, epochs, imgsz, batch, device, save_dir=None, **other_params):
     params = {
         'model': model_name,
@@ -27,7 +52,7 @@ def run_yolo_training(model_name, data_yaml, epochs, imgsz, batch, device, save_
     
     def epoch_cd(trainer):
         print(f"Epoch {trainer.epoch + 1}")
-        metrics = {k: float(f"{v:.4f}") for k, v in trainer.metrics.items()}
+        metrics = _collect_epoch_metrics(trainer)
         channel_layer = get_channel_layer()
         async_to_sync(channel_layer.group_send)(
             'yolo_training',
@@ -38,10 +63,10 @@ def run_yolo_training(model_name, data_yaml, epochs, imgsz, batch, device, save_
                 'metrics': metrics,
             }
         )
-        for k, v in trainer.metrics.items():
+        for k, v in metrics.items():
             print(f"{k}: {v:.4f}")
     
-    model.add_callback('on_model_save', epoch_cd)
+    model.add_callback('on_fit_epoch_end', epoch_cd)
     results = model.train(**params)
     
     # metricsの修正

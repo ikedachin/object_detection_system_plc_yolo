@@ -22,6 +22,7 @@ urlpatterns = [
     path('api/scan_projects/', views.scan_projects, name='scan_projects'),
     path('api/load_project_images/<int:project_id>/', views.load_project_images, name='load_project_images'),
     path('images/<str:filename>', views.serve_image, name='serve_image'),
+    path('annotation-image/<int:image_id>/<str:cropped>/', views.serve_annotation_image, name='serve_annotation_image'),
     path('get_thumbnail/<int:image_id>/<str:cropped>/', views.get_thumbnail, name='get_thumbnail'),
 ]
 

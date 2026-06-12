@@ -952,88 +952,176 @@ def add_project(request):
 
     project_name = request.POST.get('project_name', '').strip()
     source_folder = request.POST.get('source_folder', '').strip()
-    # print(f"add_project: project_name = {project_name}")  # デバッグ用
-    # print(f"add_project: source_folder = {source_folder}")  # デバッグ用
+    uploaded_files = request.FILES.getlist('images')
 
     if not project_name:
-        project_name = source_folder.split('/')[-1] if source_folder else ''
-        print("add_project: プロジェクト名が空です")  # デバッグ用
-        return JsonResponse({'success': False, 'error': 'フォルダ名をプロジェクト名としました'})
+        return JsonResponse({'success': False, 'error': 'プロジェクト名を入力してください'})
     if not source_folder:
-        print("add_project: 元フォルダが空です")  # デバッグ用
         return JsonResponse({'success': False, 'error': '元フォルダのパスを選択してください'})
-    invalid_chars = ['<', '>', ':', '"', '|', '?', '*']
+    invalid_chars = ['<', '>', ':', '"', '|', '?', '*', '/', '\\']
     if any(char in project_name for char in invalid_chars):
-        print(f"add_project: 無効な文字が含まれています: {project_name}")  # デバッグ用
         return JsonResponse({'success': False, 'error': f'プロジェクト名に無効な文字が含まれています: {", ".join(invalid_chars)}'})
 
     project_root = Path(settings.BASE_DIR.parent)
     projects_dir = project_root / 'projects'
-    new_project_dir = projects_dir / project_name / 'data_collection'
-    # print(f"add_project: projects_dir = {projects_dir}")  # デバッグ用
-    # print(f"add_project: new_project_dir = {new_project_dir}")  # デバッグ用
-    projects_dir.mkdir(parents=True, exist_ok=True)
-    new_project_dir.mkdir(parents=True, exist_ok=True)
+    project_dir = projects_dir / project_name
+    new_project_dir = project_dir / 'data_collection'
+    image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.gif', '.webp')
 
-    # 画像ファイル保存処理
-    image_files = request.FILES.getlist('images')
+    try:
+        from annotator.models import ImageFile, Project
+    except ImportError as import_error:
+        return JsonResponse({'success': False, 'error': f'annotator.modelsのインポートに失敗しました: {import_error}'})
+
+    if Project.objects.filter(name=project_name).exists():
+        return JsonResponse({'success': False, 'error': f'同名のプロジェクトが既に存在します: {project_name}'})
+    if Project.objects.filter(folder_name=project_name).exists():
+        return JsonResponse({'success': False, 'error': f'同じフォルダ名のプロジェクトが既に存在します: {project_name}'})
+
+    source_path = Path(source_folder)
+    if not source_path.is_absolute():
+        source_path = project_root / source_folder
+    source_path = source_path.resolve()
+
+    if not uploaded_files and not source_path.exists():
+        return JsonResponse({'success': False, 'error': f'元フォルダが見つかりません: {source_path}'})
+    if source_path.exists() and not source_path.is_dir():
+        return JsonResponse({'success': False, 'error': f'指定されたパスはフォルダではありません: {source_path}'})
+
     copied_files = 0
     skipped_files = 0
-    error_files = []
-    image_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.gif', '.webp')
-    # print(f"add_project: 画像ファイル保存開始 (アップロード数: {len(image_files)})")  # デバッグ用
-    for img in image_files:
-        # webkitRelativePathでサブフォルダ再現
-        rel_path = img.name if hasattr(img, 'name') else None
-        if hasattr(img, 'webkit_relative_path'):
-            rel_path = img.webkit_relative_path
-        # サブフォルダ再現
-        target_path = new_project_dir / rel_path if rel_path else new_project_dir / img.name
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with open(target_path, 'wb+') as f:
-                for chunk in img.chunks():
-                    f.write(chunk)
-            if str(target_path).lower().endswith(image_extensions):
-                copied_files += 1
-            else:
-                skipped_files += 1
-        except Exception as file_error:
-            print(f"add_project: ファイル保存エラー: {img.name} - {file_error}")  # デバッグ用
-            error_files.append(f"{img.name}: {str(file_error)}")
-            if len(error_files) > 10:
-                break
-    # print(f"add_project: 画像保存完了 - 画像: {copied_files}, その他: {skipped_files}, エラー: {len(error_files)}")  # デバッグ用
+    registered_images = 0
+    warnings = []
 
-    # データベース登録
+    def safe_relative_upload_name(filename):
+        normalized = Path(str(filename).replace('\\', '/'))
+        clean_parts = [part for part in normalized.parts if part not in ('', '.', '..')]
+        return Path(*clean_parts) if clean_parts else Path(normalized.name)
+
+    def choose_scan_root(path):
+        data_collection_path = path / 'data_collection'
+        if data_collection_path.is_dir():
+            return data_collection_path
+        return path
+
+    def copy_image_files_from_folder(source_root, target_root):
+        copied = 0
+        skipped = 0
+        errors = []
+        resolved_target = target_root.resolve()
+        for src in source_root.rglob('*'):
+            if not src.is_file():
+                continue
+            if src.suffix.lower() not in image_extensions:
+                skipped += 1
+                continue
+            relative_path = src.relative_to(source_root)
+            dst = target_root / relative_path
+            if src.resolve() == dst.resolve():
+                copied += 1
+                continue
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if src.resolve().is_relative_to(resolved_target):
+                    # コピー元がコピー先配下なら無限増殖を避けるため読み取り登録だけにする。
+                    copied += 1
+                    continue
+                shutil.copy2(src, dst)
+                copied += 1
+            except Exception as copy_error:
+                errors.append(f'{src}: {copy_error}')
+        return copied, skipped, errors
+
+    def save_uploaded_files(files, target_root):
+        copied = 0
+        skipped = 0
+        errors = []
+        for uploaded in files:
+            relative_path = safe_relative_upload_name(uploaded.name)
+            target_path = target_root / relative_path
+            try:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                with open(target_path, 'wb+') as f:
+                    for chunk in uploaded.chunks():
+                        f.write(chunk)
+                if target_path.suffix.lower() in image_extensions:
+                    copied += 1
+                else:
+                    skipped += 1
+            except Exception as file_error:
+                errors.append(f'{uploaded.name}: {file_error}')
+        return copied, skipped, errors
+
+    def register_images(project):
+        created = 0
+        skipped = []
+        errors = []
+        for image_path in new_project_dir.rglob('*'):
+            if not image_path.is_file() or image_path.suffix.lower() not in image_extensions:
+                continue
+            filename = image_path.name
+            if ImageFile.objects.filter(filename=filename).exists():
+                skipped.append(filename)
+                continue
+            try:
+                with Image.open(image_path) as img:
+                    width, height = img.size
+                ImageFile.objects.create(
+                    filename=filename,
+                    width=width,
+                    height=height,
+                    project=project,
+                )
+                created += 1
+            except Exception as image_error:
+                errors.append(f'{filename}: {image_error}')
+        return created, skipped, errors
+
     try:
-        from annotator.models import Project
-        if Project.objects.filter(name=project_name).exists():
-            print(f"add_project: データベースに同名のプロジェクトが既に存在: {project_name}")  # デバッグ用
-        elif Project.objects.filter(folder_name=project_name).exists():
-            print(f"add_project: データベースに同じフォルダ名のプロジェクトが既に存在: {project_name}")  # デバッグ用
+        projects_dir.mkdir(parents=True, exist_ok=True)
+        new_project_dir.mkdir(parents=True, exist_ok=True)
+
+        if uploaded_files:
+            copied, skipped, errors = save_uploaded_files(uploaded_files, new_project_dir)
         else:
+            source_scan_root = choose_scan_root(source_path)
+            copied, skipped, errors = copy_image_files_from_folder(source_scan_root, new_project_dir)
+        copied_files += copied
+        skipped_files += skipped
+        if errors:
+            return JsonResponse({'success': False, 'error': '画像ファイルのコピーに失敗しました', 'details': errors[:10]})
+
+        if copied_files == 0:
+            return JsonResponse({'success': False, 'error': '登録対象の画像ファイルが見つかりませんでした'})
+
+        with transaction.atomic():
             project_db = Project.objects.create(
                 name=project_name,
                 folder_name=project_name,
                 is_active=False,
                 cropped=False,
-                save_path=str(new_project_dir.parent.relative_to(project_root)).replace(os.path.sep, '/'),  # 画像保存先パスをDBに保存
+                save_path=str(project_dir.resolve()),
             )
-            # project_dbをアクティブなプロジェクトに変更する。（Project.set_avtive関数を用いる）
+            registered_images, duplicate_images, image_errors = register_images(project_db)
+            if image_errors:
+                raise ValueError('画像DB登録に失敗しました: ' + '; '.join(image_errors[:10]))
             project_db.set_active()
-            # print(f"add_project: データベースにプロジェクトを保存: {project_db}")  # デバッグ用
-    except ImportError as import_error:
-        print(f"add_project: annotator.modelsのインポートに失敗: {import_error}")  # デバッグ用
+
+        if duplicate_images:
+            warnings.append(f'同名ファイルがDBに存在するためスキップ: {len(duplicate_images)}件')
     except Exception as db_error:
-        print(f"add_project: データベース保存でエラー: {db_error}")  # デバッグ用
+        return JsonResponse({'success': False, 'error': f'プロジェクト登録中にエラーが発生しました: {db_error}'})
+
     result = {
         'success': True,
         'message': f'プロジェクト "{project_name}" を正常に作成しました',
         'copied_files': copied_files,
         'skipped_files': skipped_files,
-        'project_path': str(new_project_dir)
+        'registered_images': registered_images,
+        'project_path': str(project_dir),
     }
+    if warnings:
+        result['warnings'] = ' / '.join(warnings)
     return JsonResponse(result)
 
 

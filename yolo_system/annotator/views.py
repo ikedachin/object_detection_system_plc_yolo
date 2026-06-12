@@ -14,6 +14,19 @@ import mimetypes
 from .models import ImageFile, Label, Annotation, Project
 
 
+def resolve_project_image_path(image, image_type):
+    """アノテーション詳細で使う元画像パスを返す。サムネイルは使わない。"""
+    if image.project is None:
+        raise Http404("画像にプロジェクトが紐づいていません")
+
+    folder_name = 'cropped' if image_type == 'cropped' else 'data_collection'
+    project_root_path = settings.PROJECTS_DIR / image.project.folder_name
+    image_path = project_root_path / folder_name / image.filename
+    if not image_path.exists():
+        raise Http404(f"{folder_name}の画像が見つかりません")
+    return image_path
+
+
 def index(request):
     """画像一覧ページ"""
     # 現在のプロジェクトを取得
@@ -96,24 +109,7 @@ def annotate(request, image_id: int, cropped: str = "data_collection"):
     # # GETパラメータまたはセッションで判定（必要に応じて変更）
     # if request.GET.get('use_cropped') == 'true' or request.session.get('use_cropped'):
     #     use_cropped = True
-    project_root_path = settings.PROJECTS_DIR / current_project.folder_name
-    # project_root_path = os.path.join(settings.BASE_DIR.parent, 'projects', current_project.folder_name)
-    print(f'project_dir: {settings.PROJECTS_DIR}')
-    print(f"Project root path: {project_root_path}")
-    # 画像パスを決定
-    image_url = None
-    if current_project.cropped:
-        image_url = project_root_path / 'cropped' / image.filename
-        print(f"Using cropped image URL: {image_url}")
-    else:
-        image_url = project_root_path / 'data_collection' / image.filename
-
-    if image_url.exists():
-        print("image is exist: ", image_url)
-    else:
-        print("image is not exist: ", image_url)
-        # 画像が存在しない場合は404エラーを返す
-        raise Http404("画像が見つかりません")
+    resolve_project_image_path(image, cropped)
 
     # 次の画像と前の画像を取得（同じプロジェクト内で、一覧と同じ filename 順に合わせる）
     ordered = ImageFile.objects.filter(project=current_project).order_by('filename', 'id')
@@ -126,7 +122,7 @@ def annotate(request, image_id: int, cropped: str = "data_collection"):
         (Q(filename=image.filename) & Q(id__lt=image.id))
     ).order_by('-filename', '-id').first()
     
-    image_url = reverse('annotator:serve_image', kwargs={'filename': image.filename})
+    image_url = reverse('annotator:serve_annotation_image', kwargs={'image_id': image.id, 'cropped': cropped})
 
     return render(request, 'annotator/annotate.html', {
         'image': image,
@@ -627,6 +623,19 @@ def serve_image(request, filename):
         raise Http404("画像の配信に失敗しました")
 
 
+def serve_annotation_image(request, image_id, cropped: str = "data_collection"):
+    """アノテーション詳細画面用にdata_collection/croppedの元画像を配信する。"""
+    image = get_object_or_404(ImageFile, id=image_id)
+    image_path = resolve_project_image_path(image, cropped)
+
+    content_type, _ = mimetypes.guess_type(str(image_path))
+    if content_type is None:
+        content_type = 'application/octet-stream'
+
+    with open(image_path, 'rb') as f:
+        return HttpResponse(f.read(), content_type=content_type)
+
+
 def project(request):
     """プロジェクト一覧ページ"""
     projects = Project.objects.all().order_by('name')
@@ -840,5 +849,4 @@ def get_thumbnail(request, image_id, cropped: str = "original"):
         content = f.read()
         
     return HttpResponse(content, content_type='image/jpeg')
-
 
