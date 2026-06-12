@@ -6,6 +6,7 @@ from annotator.models import Project
 from training.applications.yolo_train import run_yolo_training
 import os, json
 from django.conf import settings
+from django.db import models
 from pathlib import Path
 import platform
 import torch
@@ -21,6 +22,8 @@ TRAINING_AUGMENTATION_PARAMS = {
     'scale': 0.5,
 }
 
+DATASET_DATA_TYPES = ('data_collection', 'cropped')
+
 
 if platform.system() == 'Windows':
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -32,34 +35,71 @@ else:
     device = 'cpu'
 
 
-# DBのProjectからプロジェクト名を取得し、annotated/cropped, annotated/data_collection のいずれかにyamlがあるプロジェクトのみ返す
+def get_project_dataset_dir(project, data_type):
+    project_folder = project.folder_name or project.name
+    return Path(settings.PROJECTS_DIR) / project_folder / 'annotated' / data_type
+
+
+def get_project_by_identifier(identifier):
+    if not identifier:
+        return None
+    identifier = str(identifier)
+    if identifier.isdigit():
+        project = Project.objects.filter(id=int(identifier)).first()
+        if project:
+            return project
+    return Project.objects.filter(
+        models.Q(name=identifier) | models.Q(folder_name=identifier)
+    ).first()
+
+
+# DBのProjectからプロジェクト情報を取得し、annotated/cropped または annotated/data_collection にyamlがあるプロジェクトのみ返す
 def get_projects_with_yaml(data_type):
-    base = Path(settings.PROJECTS_DIR)
     projects = []
     db_projects = Project.objects.all()
     for project in db_projects:
-        d = project.name
-        if d.startswith('.'):
+        display_name = project.name
+        if display_name.startswith('.'):
             continue
-        annotated_path = base / d / 'annotated' / data_type
+        annotated_path = get_project_dataset_dir(project, data_type)
         if annotated_path.is_dir():
-            yamls = list(annotated_path.glob('*.yaml')) + list(annotated_path.glob('*.yml'))
+            yamls = sorted(list(annotated_path.glob('*.yaml')) + list(annotated_path.glob('*.yml')))
             if yamls:
                 # プロジェクトと学習リストも含めて返す
                 training_runs = TrainingRun.objects.filter(project=project).order_by('-trained_at')
                 projects.append({
                     'id': project.id,
-                    'name': d,
+                    'name': display_name,
+                    'folder_name': project.folder_name,
                     'is_active': getattr(project, 'is_active', False),
                     'training_runs': list(training_runs.values('id', 'training_name', 'is_active', 'trained_at'))
                 })
     return projects
 
-def get_dataset_yamls(project_name, data_type):
-    base = Path(settings.PROJECTS_DIR) / project_name / 'annotated' / data_type
-    yamls = list(base.glob('*.yaml')) + list(base.glob('*.yml'))
+def get_dataset_yamls(project_identifier, data_type):
+    project = get_project_by_identifier(project_identifier)
+    if not project:
+        return []
+    base = get_project_dataset_dir(project, data_type)
+    yamls = sorted(list(base.glob('*.yaml')) + list(base.glob('*.yml')))
     # ファイル名とフルパスのペアで返す
     return [{'name': y.name, 'fullpath': str(y)} for y in yamls]
+
+
+def select_data_type_with_yaml(preferred_data_type):
+    if get_projects_with_yaml(preferred_data_type):
+        return preferred_data_type
+    for data_type in DATASET_DATA_TYPES:
+        if data_type != preferred_data_type and get_projects_with_yaml(data_type):
+            return data_type
+    return preferred_data_type
+
+
+def get_default_data_type():
+    active_project = Project.get_active_project()
+    if active_project:
+        return 'cropped' if active_project.cropped else 'data_collection'
+    return select_data_type_with_yaml('data_collection')
 
 
 def parse_training_augmentation_params(data):
@@ -196,7 +236,8 @@ def train_view(request):
             return JsonResponse({'success': False, 'error': str(e)})
     else:
         # デフォルトはdata_collectionでプロジェクトリストを取得
-        data_type = request.GET.get('data_type', 'data_collection')
+        requested_data_type = request.GET.get('data_type')
+        data_type = requested_data_type if requested_data_type in DATASET_DATA_TYPES else get_default_data_type()
         projects = get_projects_with_yaml(data_type)
         # is_active=Trueのプロジェクト名を取得（なければNone）
         selected_project = None

@@ -1,4 +1,5 @@
 import json
+import shutil
 from unittest.mock import patch
 
 from django.conf import settings
@@ -40,6 +41,87 @@ class TrainingMetricCollectionTests(TestCase):
         metrics = _collect_epoch_metrics(FakeTrainer())
 
         self.assertEqual(metrics, {'metrics/precision(B)': 0.7654})
+
+
+class TrainingYamlDiscoveryTests(TestCase):
+    def setUp(self):
+        self.created_project_dirs = []
+
+    def tearDown(self):
+        for project_dir in self.created_project_dirs:
+            shutil.rmtree(project_dir, ignore_errors=True)
+
+    def make_dataset_yaml(self, project, data_type, filename='data.yaml'):
+        project_dir = settings.PROJECTS_DIR / project.folder_name
+        self.created_project_dirs.append(project_dir)
+        dataset_dir = project_dir / 'annotated' / data_type
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        yaml_path = dataset_dir / filename
+        yaml_path.write_text(
+            'path: .\ntrain: images/train\nval: images/valid\nnames:\n  0: target\n',
+            encoding='utf-8',
+        )
+        return yaml_path
+
+    def test_training_page_finds_yaml_by_project_folder_name(self):
+        project = Project.objects.create(
+            name='Display Name Project',
+            folder_name='folder_name_project',
+            is_active=True,
+        )
+        yaml_path = self.make_dataset_yaml(project, 'data_collection', 'folder_data.yaml')
+
+        response = self.client.get('/training/?data_type=data_collection')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['selected_project'], project.name)
+        self.assertEqual(response.context['dataset_yamls'][0]['fullpath'], str(yaml_path))
+
+    def test_dataset_yaml_api_accepts_project_id(self):
+        project = Project.objects.create(
+            name='Project ID Lookup',
+            folder_name='project_id_lookup',
+        )
+        yaml_path = self.make_dataset_yaml(project, 'data_collection', 'id_lookup.yaml')
+
+        response = self.client.get(
+            '/training/',
+            data={'project_name': str(project.id), 'data_type': 'data_collection'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()['yamls'], [{'name': 'id_lookup.yaml', 'fullpath': str(yaml_path)}])
+
+    def test_training_page_without_data_type_uses_active_project_cropped_flag(self):
+        project = Project.objects.create(
+            name='Cropped Workflow Project',
+            folder_name='cropped_workflow_project',
+            is_active=True,
+            cropped=True,
+        )
+        yaml_path = self.make_dataset_yaml(project, 'cropped', 'cropped_data.yaml')
+
+        response = self.client.get('/training/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['selected_data_type'], 'cropped')
+        self.assertEqual(response.context['dataset_yamls'][0]['fullpath'], str(yaml_path))
+
+    def test_training_page_without_data_type_uses_data_collection_for_uncropped_active_project(self):
+        project = Project.objects.create(
+            name='Data Collection Workflow Project',
+            folder_name='data_collection_workflow_project',
+            is_active=True,
+            cropped=False,
+        )
+        yaml_path = self.make_dataset_yaml(project, 'data_collection', 'data_collection.yaml')
+        self.make_dataset_yaml(project, 'cropped', 'cropped_should_not_be_default.yaml')
+
+        response = self.client.get('/training/')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['selected_data_type'], 'data_collection')
+        self.assertEqual(response.context['dataset_yamls'][0]['fullpath'], str(yaml_path))
 
 
 class TrainViewParameterTests(TestCase):

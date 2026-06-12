@@ -759,6 +759,7 @@
         axisLabel: 'box loss',
         emptyText: 'box lossを受信するとグラフを表示します。',
         axisSide: 'left',
+        lossChart: true,
         matches: key => normalizeMetricKey(key).includes('box_loss'),
         rank: key => normalizeMetricKey(key).startsWith('train/') ? 0 : 1,
       },
@@ -768,6 +769,7 @@
         axisLabel: 'cls loss',
         emptyText: 'cls lossを受信するとグラフを表示します。',
         axisSide: 'left',
+        lossChart: true,
         matches: key => normalizeMetricKey(key).includes('cls_loss'),
         rank: key => normalizeMetricKey(key).startsWith('train/') ? 0 : 1,
       },
@@ -777,6 +779,7 @@
         axisLabel: 'dfl loss',
         emptyText: 'dfl lossを受信するとグラフを表示します。',
         axisSide: 'left',
+        lossChart: true,
         matches: key => normalizeMetricKey(key).includes('dfl_loss'),
         rank: key => normalizeMetricKey(key).startsWith('train/') ? 0 : 1,
       },
@@ -893,6 +896,19 @@
         .slice(0, 6);
     }
 
+    function chartLineColor(key, index, config) {
+      const normalized = normalizeMetricKey(key);
+      if (config.lossChart) {
+        if (normalized.startsWith('train/')) {
+          return '#1565c0';
+        }
+        if (normalized.startsWith('val/') || normalized.startsWith('valid/')) {
+          return '#c62828';
+        }
+      }
+      return chartColors[index % chartColors.length];
+    }
+
     function updateProgressDisplay(epoch, totalEpochs) {
       const safeEpoch = Math.max(0, Number(epoch) || 0);
       const safeTotal = Math.max(0, Number(totalEpochs) || 0);
@@ -1005,7 +1021,7 @@
       ctx.textAlign = 'left';
 
       metricKeys.forEach((key, index) => {
-        const color = chartColors[index % chartColors.length];
+        const color = chartLineColor(key, index, config);
         ctx.strokeStyle = color;
         ctx.fillStyle = color;
         ctx.lineWidth = 2;
@@ -1048,7 +1064,7 @@
       if (config.legend) {
         config.legend.innerHTML = metricKeys.map((key, index) => `
           <span class="training-legend-item">
-            <span class="training-legend-color" style="background:${chartColors[index % chartColors.length]}"></span>
+            <span class="training-legend-color" style="background:${chartLineColor(key, index, config)}"></span>
             ${escapeHtml(key)}
           </span>
         `).join('');
