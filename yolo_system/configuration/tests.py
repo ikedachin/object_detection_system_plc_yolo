@@ -151,3 +151,57 @@ class AddProjectTests(TestCase):
         image_path = self.temp_dir / 'upload_source.png'
         self.make_image(image_path)
         return image_path.read_bytes()
+
+
+class DeleteProjectTests(TestCase):
+    def setUp(self):
+        self.projects_dir = Path(settings.PROJECTS_DIR)
+        self.created_project_dirs = []
+
+    def tearDown(self):
+        for project_dir in self.created_project_dirs:
+            shutil.rmtree(project_dir, ignore_errors=True)
+
+    def track_project_dir(self, project_name):
+        project_dir = self.projects_dir / project_name
+        self.created_project_dirs.append(project_dir)
+        return project_dir
+
+    def test_delete_project_removes_database_row_and_existing_folder(self):
+        project_name = 'delete_existing_project'
+        project_dir = self.track_project_dir(project_name)
+        (project_dir / 'data_collection').mkdir(parents=True, exist_ok=True)
+        project = Project.objects.create(name=project_name, folder_name=project_name)
+        ImageFile.objects.create(filename='delete.png', width=10, height=10, project=project)
+
+        response = self.client.post(
+            reverse('configuration:delete_project'),
+            data={'project_name': project_name},
+            content_type='application/json',
+        )
+
+        data = response.json()
+        self.assertTrue(data['success'])
+        self.assertFalse(Project.objects.filter(name=project_name).exists())
+        self.assertFalse(ImageFile.objects.filter(filename='delete.png').exists())
+        self.assertFalse(project_dir.exists())
+
+    def test_delete_project_removes_database_row_when_folder_is_missing(self):
+        project_name = 'delete_db_only_project'
+        project_dir = self.track_project_dir(project_name)
+        Project.objects.create(
+            name=project_name,
+            folder_name=project_name,
+            save_path=str(project_dir),
+        )
+
+        response = self.client.post(
+            reverse('configuration:delete_project'),
+            data={'project_name': project_name},
+            content_type='application/json',
+        )
+
+        data = response.json()
+        self.assertTrue(data['success'])
+        self.assertIn('ファイル: なし', data['message'])
+        self.assertFalse(Project.objects.filter(name=project_name).exists())

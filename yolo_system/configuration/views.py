@@ -1140,23 +1140,17 @@ def delete_project(request):
         if not project_name:
             return JsonResponse({'success': False, 'error': 'プロジェクト名を指定してください'})
         
-        project_root = settings.BASE_DIR.parent
-        projects_dir = project_root / 'projects'
-        project_dir = projects_dir / project_name
-        
-        # プロジェクトディレクトリが存在するかチェック
-        if not project_dir.exists():
-            return JsonResponse({'success': False, 'error': f'プロジェクト "{project_name}" が見つかりません'})
-        
-        if not project_dir.is_dir():
-            return JsonResponse({'success': False, 'error': f'指定されたパスはフォルダではありません: {project_name}'})
+        project_dirs = {settings.PROJECTS_DIR / project_name}
+        for project_dir in project_dirs:
+            if project_dir.exists() and not project_dir.is_dir():
+                return JsonResponse({'success': False, 'error': f'指定されたパスはフォルダではありません: {project_name}'})
         
         # データベース削除をトランザクション内で実行
         deleted_db_records = 0
         try:
             with transaction.atomic():
                 from annotator.models import Project, ImageFile, Annotation, Label
-                from checker.models import Result
+                from checker.models import InferenceResult
                 from configuration.models import ProjectTaskProgress, ProjectWorkflowState
                 
                 # プロジェクトを検索
@@ -1164,15 +1158,18 @@ def delete_project(request):
                     models.Q(name=project_name) | models.Q(folder_name=project_name)
                 )
                 
-                if projects_to_delete.exists():
-                    for project in projects_to_delete:
+                projects = list(projects_to_delete)
+                if projects:
+                    for project in projects:
+                        if project.folder_name:
+                            project_dirs.add(settings.PROJECTS_DIR / project.folder_name)
                         print(f"削除対象プロジェクト: {project.name} (ID: {project.id})")
                         
-                        # 1. Resultレコードを先に削除（PROTECT制約を回避）
-                        result_count = Result.objects.filter(project=project).count()
+                        # 1. InferenceResultレコードを先に削除
+                        result_count = InferenceResult.objects.filter(project=project).count()
                         if result_count > 0:
-                            Result.objects.filter(project=project).delete()
-                            print(f"Result レコードを削除: {result_count}件")
+                            InferenceResult.objects.filter(project=project).delete()
+                            print(f"InferenceResult レコードを削除: {result_count}件")
                         
                         # 2. Annotationレコードを削除
                         annotation_count = Annotation.objects.filter(image__project=project).count()
@@ -1216,29 +1213,32 @@ def delete_project(request):
                 else:
                     print(f"データベースに該当するプロジェクトが見つかりません: {project_name}")
                 
-        except ImportError as import_error:
-            print(f"delete_project: annotator.modelsのインポートに失敗: {import_error}")
         except Exception as db_error:
             print(f"delete_project: データベース削除でエラー: {db_error}")
             # データベース削除に失敗した場合は例外を再発生させる
             raise db_error
         
-        # データベース削除が成功した場合のみ、物理ディレクトリを削除
-        try:
-            shutil.rmtree(project_dir)
-            print(f"プロジェクトディレクトリを削除: {project_dir}")
-        except Exception as file_error:
-            print(f"ファイル削除エラー: {file_error}")
-            # ファイル削除に失敗してもデータベースは削除済みなので、警告として処理
-            return JsonResponse({
-                'success': True,
-                'message': f'プロジェクト "{project_name}" をデータベースから削除しました（ファイル削除に一部失敗）',
-                'warning': f'ファイル削除エラー: {str(file_error)}'
-            })
+        file_deleted = False
+        for project_dir in project_dirs:
+            if project_dir.exists():
+                try:
+                    shutil.rmtree(project_dir)
+                    file_deleted = True
+                    print(f"プロジェクトディレクトリを削除: {project_dir}")
+                except Exception as file_error:
+                    print(f"ファイル削除エラー: {file_error}")
+                    # ファイル削除に失敗してもデータベースは削除済みなので、警告として処理
+                    return JsonResponse({
+                        'success': True,
+                        'message': f'プロジェクト "{project_name}" をデータベースから削除しました（ファイル削除に一部失敗）',
+                        'warning': f'ファイル削除エラー: {str(file_error)}'
+                    })
+            else:
+                print(f"プロジェクトディレクトリは存在しないためDBのみ削除: {project_dir}")
         
         return JsonResponse({
             'success': True,
-            'message': f'プロジェクト "{project_name}" を完全に削除しました（DB: {deleted_db_records}件、ファイル: 削除済み）'
+            'message': f'プロジェクト "{project_name}" を削除しました（DB: {deleted_db_records}件、ファイル: {"削除済み" if file_deleted else "なし"}）'
         })
         
     except Exception as e:
